@@ -74,6 +74,7 @@ See [@omnisocials/mcp-server on npm](https://www.npmjs.com/package/@omnisocials/
 
 - [OmniSocials](https://omnisocials.com)
 - [API Documentation](https://docs.omnisocials.com)
+- [Integrations Guide](https://docs.omnisocials.com/integrations#agent-skills)
 - [MCP Server](https://www.npmjs.com/package/@omnisocials/mcp-server)
 
 ## License
