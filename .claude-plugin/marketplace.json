@@ -1,0 +1,12 @@
+{
+  "name": "omnisocials-skills",
+  "version": "1.0.0",
+  "owner": { "name": "OmniSocials" },
+  "plugins": [
+    {
+      "name": "omnisocials",
+      "description": "Manage social media across 10 platforms — create posts, stories, reels, upload media, view analytics, and configure webhooks.",
+      "source": "https://github.com/omnisocials/agent-skills"
+    }
+  ]
+}
