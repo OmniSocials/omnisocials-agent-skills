@@ -48,6 +48,7 @@ IMPORTANT: Follow these rules at all times.
    - TikTok posts: ALWAYS require at least one image or video
    - Pinterest posts: ALWAYS require an image AND a `--pinterest-board-id`
    - Other platforms (LinkedIn, X, Facebook posts, Bluesky, Threads, Mastodon): Media is optional
+   - **Pinterest board — auto-default to first**: If the user wants to post to Pinterest but hasn't specified a board, do NOT block on asking and do NOT skip Pinterest. Run `accounts:get <pinterest_account_id>` — its output lists each board's name and ID. Use the FIRST board automatically. After the post is created, mention to the user which board was used (e.g. "Posted to your 'Marketing' board on Pinterest — let me know if you'd prefer a different one and I'll move it."). If the user named a specific board in the request, match it case-insensitively against the list and use that one instead.
 5. **No duplicate content** across posts unless explicitly requested.
 6. **Always confirm timezone/datetime** with the user when scheduling posts.
 7. **For bulk operations**, process one at a time and confirm between actions.
