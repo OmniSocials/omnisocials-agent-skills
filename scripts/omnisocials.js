@@ -297,15 +297,23 @@ function outputJson(data) {
 
 function truncate(str, len) {
   if (!str) return "";
-  str = str.replace(/\n/g, " ");
+  str = String(str).replace(/\n/g, " ");
   return str.length > len ? str.slice(0, len - 3) + "..." : str;
+}
+
+// The API returns `content` as a per-platform object ({ default, instagram, … }),
+// not a string. Pull a representative string for one-line display.
+function postContentString(content) {
+  if (!content) return "";
+  if (typeof content === "string") return content;
+  return content.default || Object.values(content).find((v) => typeof v === "string") || "";
 }
 
 function formatPost(post, index) {
   const lines = [];
   lines.push(`#${index + 1}  ID: ${post.id}`);
   lines.push(`    Status: ${post.status}`);
-  lines.push(`    Content: "${truncate(post.content, 60)}"`);
+  lines.push(`    Content: "${truncate(postContentString(post.content), 60)}"`);
   // The API returns `accounts` (channel ids) and `schedule_at`; older code read
   // `channels`/`scheduled_at` which the response never contains, so both showed
   // blank. Accept both names so output is correct against the current API.
@@ -699,9 +707,10 @@ async function cmdMediaCheck(config, flags) {
     );
   }
 
-  // Response shape varies per platform; print raw JSON so nothing is hidden.
   const result = await apiRequest(config, "POST", "/media/check", body);
-  handleResult(result, flags);
+  // /media/check returns a top-level object (no `data` wrapper), so print the
+  // whole response rather than result.data (which would be undefined).
+  handleResult(result, flags, () => outputJson(result));
 }
 
 async function cmdMediaUploadBase64(config, flags) {
@@ -955,12 +964,21 @@ async function cmdAnalyticsOverview(config, flags) {
   });
 
   handleResult(result, flags, (data) => {
+    // `period` and the resolved date range live at the top level of the
+    // response, not inside `data` (the summary). The summary uses singular
+    // `total_engagement` (not `total_engagements`).
     console.log("Analytics Overview");
     console.log("─".repeat(40));
-    console.log(`Period: ${data.period || "custom"}`);
+    console.log(`Period: ${result.period || data.period || "custom"}`);
     console.log(`Total posts: ${data.total_posts ?? "N/A"}`);
     console.log(`Total impressions: ${data.total_impressions ?? "N/A"}`);
-    console.log(`Total engagements: ${data.total_engagements ?? "N/A"}`);
+    console.log(`Total engagements: ${data.total_engagement ?? "N/A"}`);
+    if (data.average_engagement_rate != null) {
+      console.log(`Avg engagement rate: ${Number(data.average_engagement_rate).toFixed(2)}%`);
+    }
+    if (data.top_performing_platform) {
+      console.log(`Top platform: ${data.top_performing_platform}`);
+    }
   });
 }
 
