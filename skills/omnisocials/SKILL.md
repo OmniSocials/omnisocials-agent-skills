@@ -1,13 +1,15 @@
 ---
 name: omnisocials
-description: Manage social media across 10 platforms (Instagram, Facebook, LinkedIn, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon). Create posts, stories, reels, upload media, view analytics, and configure webhooks via the OmniSocials API.
+description: Manage social media across 11 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business). Create posts, stories, reels, upload media, organize folders, view analytics, and configure webhooks via the OmniSocials API.
 ---
 
 # OmniSocials Skill
 
-Create, schedule, and publish social media content across 10 platforms using OmniSocials.
+Create, schedule, and publish social media content across 11 platforms using OmniSocials.
 
-OmniSocials is a social media management tool that lets you schedule posts, track analytics, and manage your inbox across Instagram, Facebook, LinkedIn, YouTube, TikTok, X (Twitter), Pinterest, Bluesky, Threads, and Mastodon.
+OmniSocials is a social media management tool that lets you schedule posts and track analytics across Instagram, Facebook, LinkedIn (personal profile + company page), YouTube, TikTok, X (Twitter), Pinterest, Bluesky, Threads, Mastodon, and Google Business.
+
+> **LinkedIn has two channel ids:** `linkedin` is a personal profile, `linkedin_page` is a company page. Both can be connected to one workspace and post independently. Always check `accounts:list` for which the user has connected.
 
 ## Setup
 
@@ -47,7 +49,8 @@ IMPORTANT: Follow these rules at all times.
    - Instagram posts: ALWAYS require at least one image or video
    - TikTok posts: ALWAYS require at least one image or video
    - Pinterest posts: ALWAYS require an image AND a `--pinterest-board-id`
-   - Other platforms (LinkedIn, X, Facebook posts, Bluesky, Threads, Mastodon): Media is optional
+   - Other platforms (LinkedIn Profile, LinkedIn Page, X, Facebook posts, Bluesky, Threads, Mastodon, Google Business): Media is optional
+   - **Per-platform media caps** (exceeding returns a 400 validation_error stating the exact limit): max items — X/Bluesky/Mastodon ≤4, Instagram/Threads ≤10, TikTok ≤35 photos (no photo/video mix). Video duration/size — **X 140s (2min 20s) / 512MB** (a tweet is either 1 video OR up to 4 images, never mixed), Bluesky 180s, Threads 5min, Instagram 15min, TikTok 10min, YouTube Short 3min. If the user's video is over the cap, tell them the limit so they can trim it.
    - **Pinterest board — auto-default to first**: If the user wants to post to Pinterest but hasn't specified a board, do NOT block on asking and do NOT skip Pinterest. Run `accounts:get <pinterest_account_id>` — its output lists each board's name and ID. Use the FIRST board automatically. After the post is created, mention to the user which board was used (e.g. "Posted to your 'Marketing' board on Pinterest — let me know if you'd prefer a different one and I'll move it."). If the user named a specific board in the request, match it case-insensitively against the list and use that one instead.
 5. **No duplicate content** across posts unless explicitly requested.
 6. **Always confirm timezone/datetime** with the user when scheduling posts.
@@ -60,10 +63,13 @@ IMPORTANT: Follow these rules at all times.
 | "Post this to Instagram" | `accounts:list` to find Instagram channel ID, then `posts:create --text "..." --channels <id>` |
 | "Schedule a post for tomorrow" | `posts:create --text "..." --channels <ids> --schedule "2026-04-07T09:00:00Z"` |
 | "Show my scheduled posts" | `posts:list --status scheduled` |
-| "Upload this image" | `media:upload --url "https://..."` |
+| "Upload this image" | `media:upload --url "https://..."` (or `media:upload-base64 --file ./img.jpg` for a local file) |
 | "Create a reel for TikTok" | `posts:create --text "..." --channels <tiktok_id> --type reel --media-urls "https://video.mp4"` |
 | "Post to all platforms" | `accounts:list`, then `posts:create --text "..." --channels <all_ids>` |
-| "How are my posts doing?" | `analytics:overview --period 7d` or `analytics:post <id>` |
+| "Post a thread to X" | `posts:create --channels <x_id> --x-thread "part 1 || part 2 || part 3"` |
+| "Tag a location on Instagram" | `locations:search "<place name>"`, then `posts:create ... --location-id <id>` |
+| "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
+| "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
 | "Delete that post" | Confirm with user, then `posts:delete <id>` |
 | "Publish my draft" | Confirm with user, then `posts:publish <id>` |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
@@ -109,9 +115,9 @@ Follow this workflow when creating posts:
 |---|---|
 | `posts:list` | List posts. Flags: `--status draft\|scheduled\|published\|failed`, `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
-| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, plus platform flags |
+| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
-| `posts:update <id>` | Update a draft or scheduled post. Flags: `--text`, `--channels`, `--schedule`, `--media-ids`, `--media-urls`, plus platform flags |
+| `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create` |
 | `posts:publish <id>` | Publish a draft/scheduled post now |
 | `posts:delete <id>` | Delete a post (cannot be undone) |
 
@@ -121,7 +127,22 @@ Follow this workflow when creating posts:
 |---|---|
 | `media:list` | List uploaded media files. Flags: `--limit`, `--offset` |
 | `media:upload` | Upload media from URL (max 50MB). Flags: `--url` (required), `--filename` |
+| `media:upload-base64` | Upload a local file or base64 data. Flags: `--file <path>` (auto-encodes + infers MIME) OR `--data` + `--mime-type`; plus `--filename`, `--name` (findable label), `--folder`, `--folder-id` |
+| `media:check` | Check whether media fits target platforms before posting. Flags: `--url`, or `--media-id`, or `--size-bytes` + `--mime` |
 | `media:delete <id>` | Delete a media file |
+
+### Folders
+
+| Command | Description |
+|---|---|
+| `folders:list` | List media folders (id, name, parent, item count). Use folder ids with `media:upload-base64 --folder-id`. |
+| `folders:create` | Create a folder. Flags: `--name` (required), `--parent-id` (nest under another folder) |
+
+### Locations
+
+| Command | Description |
+|---|---|
+| `locations:search "<name>"` | Search Facebook Places for taggable locations (min 2 chars). Returns `location_id` values to pass to `posts:create --location-id` for Instagram place tags. |
 
 ### Accounts
 
@@ -135,6 +156,7 @@ Follow this workflow when creating posts:
 | Command | Description |
 |---|---|
 | `analytics:post <post-id>` | Get post analytics: impressions, engagements, likes, comments, shares, per-platform stats |
+| `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
 | `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD` |
 
@@ -168,14 +190,16 @@ All commands support these flags:
 |---|---|---|---|---|
 | Instagram | Yes | Yes | Yes | Always (image or video) |
 | Facebook | Yes | Yes | Yes | Optional for posts, required for stories/reels |
-| LinkedIn | Yes | No | No | Optional |
+| LinkedIn (`linkedin`) | Yes | No | No | Optional |
+| LinkedIn Page (`linkedin_page`) | Yes | No | No | Optional |
 | YouTube | No | No | Yes (Shorts) | Always (video) |
 | TikTok | Yes | No | Yes | Always (image or video) |
 | X (Twitter) | Yes | No | No | Optional |
-| Pinterest | Yes | No | No | Always (image + board_id) |
+| Pinterest | Yes | No | No | Always (image or video + board_id) |
 | Bluesky | Yes | No | No | Optional |
 | Threads | Yes | No | No | Optional |
 | Mastodon | Yes | No | No | Optional |
+| Google Business | Yes | No | No | Optional |
 
 ### Platform-Specific Flags
 
@@ -185,6 +209,8 @@ All commands support these flags:
 | `--pinterest-board-id` | **Required** for Pinterest. Get board IDs from `accounts:get <pinterest_account_id>` |
 | `--pinterest-title` | Pin title |
 | `--pinterest-link` | Link URL attached to the pin |
+| `--pinterest-video-cover` | Cover image URL for a video pin |
+| `--pinterest-alt-text` | Alt text for the pin |
 
 #### YouTube (Shorts)
 | Flag | Description |
@@ -215,6 +241,22 @@ All commands support these flags:
 | Flag | Description |
 |---|---|
 | `--x-reply-settings` | Who can reply: `following` or `mentionedUsers` (empty string = everyone) |
+| `--x-thread "a \|\| b \|\| c"` | Post a thread. Parts are split on `\|\|` (2–25 parts). For per-tweet media, build the post with `--json` and a full `x.thread_parts` array instead. |
+
+#### Link preview (LinkedIn / Facebook)
+| Flag | Description |
+|---|---|
+| `--link-url` | URL to attach as a link-preview card |
+| `--link-title` | Override the preview title |
+| `--link-description` | Override the preview description |
+| `--link-thumbnail-url` | Override the preview thumbnail image |
+
+#### Instagram place tag & people tags
+| Flag | Description |
+|---|---|
+| `--location-id` | Facebook Place ID to tag (find one with `locations:search`) |
+| `--collaborators` | Up to 3 public Instagram usernames invited as co-authors (comma-separated) |
+| `--user-tags` | JSON array of photo tags: `[{"username":"name","x":0.5,"y":0.5,"image_index":0}]` (x/y are 0–1 from top-left) |
 
 ### Per-Platform Media
 
@@ -271,6 +313,37 @@ The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram":
 ### Create a TikTok video
 ```
 ./scripts/omnisocials.js posts:create --text "Watch this" --channels <tiktok_id> --type reel --media-urls "https://example.com/video.mp4" --tiktok-privacy PUBLIC_TO_EVERYONE
+```
+
+### Post an X thread
+```
+./scripts/omnisocials.js posts:create --text "Kicking off a thread" --channels <x_id> --x-thread "First point || Second point || Wrapping up"
+```
+
+### Tag an Instagram location
+```
+./scripts/omnisocials.js locations:search "Blue Bottle Coffee"
+# Returns: location_id: 1234567890  Blue Bottle Coffee  — 1 Ferry Building, San Francisco
+
+./scripts/omnisocials.js posts:create --text "Coffee time" --channels <instagram_id> --media-urls "https://example.com/photo.jpg" --location-id 1234567890
+```
+
+### Upload a local file into a folder
+```
+./scripts/omnisocials.js folders:create --name "Summer Campaign"
+# Returns: ID: 42
+
+./scripts/omnisocials.js media:upload-base64 --file ./promo.jpg --name "summer-hero" --folder-id 42
+```
+
+### Bulk analytics for many posts (one request)
+```
+./scripts/omnisocials.js analytics:posts 1024,1025,1026
+```
+
+### Post to a LinkedIn company page
+```
+./scripts/omnisocials.js posts:create --text "Company update" --channels linkedin_page
 ```
 
 ### View scheduled posts as JSON

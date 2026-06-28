@@ -8,12 +8,16 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.0.0";
+const VERSION = "1.2.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
+// Channel identifiers accepted by --channels. "linkedin" is a personal profile;
+// "linkedin_page" is a company page (both can be connected to one workspace and
+// share one OAuth token). Reddit and Snapchat are "coming soon" and not listed.
 const PLATFORMS = [
   "instagram",
   "facebook",
   "linkedin",
+  "linkedin_page",
   "youtube",
   "tiktok",
   "x",
@@ -21,6 +25,7 @@ const PLATFORMS = [
   "bluesky",
   "threads",
   "mastodon",
+  "google_business",
 ];
 
 // ─── Config Resolution ──────────────────────────────────────────────────────
@@ -166,6 +171,11 @@ function splitComma(value) {
     .filter(Boolean);
 }
 
+function exitWithError(message) {
+  console.error(message);
+  process.exit(1);
+}
+
 // ─── Platform Option Assembly ───────────────────────────────────────────────
 
 function assemblePlatformOptions(flags) {
@@ -176,6 +186,8 @@ function assemblePlatformOptions(flags) {
       "pinterest-board-id": "board_id",
       "pinterest-title": "title",
       "pinterest-link": "link",
+      "pinterest-video-cover": "video_cover",
+      "pinterest-alt-text": "alt_text",
     },
     youtube: {
       "youtube-title": "title",
@@ -221,6 +233,62 @@ function assemblePlatformOptions(flags) {
   return platforms;
 }
 
+// Assemble the request body shared by posts:create, posts:create-and-publish,
+// and posts:update. Centralised so all three stay in sync as the API grows.
+// `content` is only set when --text is given (update can omit it). Returns the
+// body object; calls exitWithError on malformed --user-tags JSON.
+function buildPostBody(flags) {
+  const body = {};
+
+  if (flags.text !== undefined) body.content = flags.text;
+  if (flags.channels) body.channels = splitComma(flags.channels);
+  // API accepts both schedule_at and scheduled_at; send the documented name.
+  if (flags.schedule) body.schedule_at = flags.schedule;
+  if (flags.type) body.type = flags.type;
+  if (flags["media-ids"]) body.media_ids = splitComma(flags["media-ids"]);
+  if (flags["media-urls"]) body.media_urls = splitComma(flags["media-urls"]);
+
+  // Link preview (LinkedIn / Facebook) — top-level fields.
+  if (flags["link-url"]) body.link_url = flags["link-url"];
+  if (flags["link-title"]) body.link_title = flags["link-title"];
+  if (flags["link-description"]) body.link_description = flags["link-description"];
+  if (flags["link-thumbnail-url"]) body.link_thumbnail_url = flags["link-thumbnail-url"];
+
+  // Instagram extras — top-level (not nested under `instagram`).
+  if (flags["location-id"]) body.location_id = flags["location-id"];
+  if (flags.collaborators) body.collaborators = splitComma(flags.collaborators);
+  if (flags["user-tags"] !== undefined) {
+    try {
+      body.user_tags = JSON.parse(flags["user-tags"]);
+    } catch {
+      exitWithError(
+        '--user-tags must be a JSON array, e.g. \'[{"username":"name","x":0.5,"y":0.5}]\''
+      );
+    }
+  }
+
+  // X thread: simple CLI form — parts separated by "||".
+  //   --x-thread "first tweet || second tweet || third"
+  // For per-tweet media use --json with a full thread_parts array instead.
+  if (flags["x-thread"]) {
+    const parts = String(flags["x-thread"])
+      .split("||")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((text) => ({ text }));
+    if (parts.length) body.x = { ...(body.x || {}), thread_parts: parts };
+  }
+
+  // Merge per-platform option objects (pinterest/youtube/instagram/tiktok/x),
+  // preserving any keys already set above (e.g. x.thread_parts).
+  const platformOpts = assemblePlatformOptions(flags);
+  for (const [platform, opts] of Object.entries(platformOpts)) {
+    body[platform] = { ...(body[platform] || {}), ...opts };
+  }
+
+  return body;
+}
+
 // ─── Output Formatters ──────────────────────────────────────────────────────
 
 function outputJson(data) {
@@ -238,14 +306,19 @@ function formatPost(post, index) {
   lines.push(`#${index + 1}  ID: ${post.id}`);
   lines.push(`    Status: ${post.status}`);
   lines.push(`    Content: "${truncate(post.content, 60)}"`);
-  if (post.channels?.length) {
-    lines.push(`    Channels: ${post.channels.join(", ")}`);
+  // The API returns `accounts` (channel ids) and `schedule_at`; older code read
+  // `channels`/`scheduled_at` which the response never contains, so both showed
+  // blank. Accept both names so output is correct against the current API.
+  const channels = post.accounts || post.channels;
+  if (channels?.length) {
+    lines.push(`    Channels: ${channels.join(", ")}`);
   }
-  if (post.scheduled_at) {
-    lines.push(`    Scheduled: ${post.scheduled_at}`);
+  const scheduledAt = post.schedule_at || post.scheduled_at;
+  if (scheduledAt) {
+    lines.push(`    Scheduled: ${scheduledAt}`);
   }
-  if (post.published_at) {
-    lines.push(`    Published: ${post.published_at}`);
+  if (post.published_urls && Object.keys(post.published_urls).length) {
+    lines.push(`    Published: ${Object.values(post.published_urls).join(", ")}`);
   }
   lines.push(`    Created: ${post.created_at}`);
   return lines.join("\n");
@@ -452,16 +525,7 @@ async function cmdPostsCreate(config, flags) {
     process.exit(1);
   }
 
-  const body = { content: text };
-
-  if (flags.channels) body.channels = splitComma(flags.channels);
-  if (flags.schedule) body.scheduled_at = flags.schedule;
-  if (flags.type) body.type = flags.type;
-  if (flags["media-ids"]) body.media_ids = splitComma(flags["media-ids"]);
-  if (flags["media-urls"]) body.media_urls = splitComma(flags["media-urls"]);
-
-  const platformOpts = assemblePlatformOptions(flags);
-  Object.assign(body, platformOpts);
+  const body = buildPostBody(flags);
 
   const result = await apiRequest(config, "POST", "/posts/create", body);
 
@@ -469,7 +533,8 @@ async function cmdPostsCreate(config, flags) {
     console.log(`Post created successfully!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
-    if (data.scheduled_at) console.log(`Scheduled: ${data.scheduled_at}`);
+    const scheduledAt = data.schedule_at || data.scheduled_at;
+    if (scheduledAt) console.log(`Scheduled: ${scheduledAt}`);
   });
 }
 
@@ -482,15 +547,9 @@ async function cmdPostsCreateAndPublish(config, flags) {
     process.exit(1);
   }
 
-  const body = { content: text };
-
-  if (flags.channels) body.channels = splitComma(flags.channels);
-  if (flags.type) body.type = flags.type;
-  if (flags["media-ids"]) body.media_ids = splitComma(flags["media-ids"]);
-  if (flags["media-urls"]) body.media_urls = splitComma(flags["media-urls"]);
-
-  const platformOpts = assemblePlatformOptions(flags);
-  Object.assign(body, platformOpts);
+  const body = buildPostBody(flags);
+  // create-and-publish ignores scheduling; drop it if a stray --schedule slipped in.
+  delete body.schedule_at;
 
   const result = await apiRequest(config, "POST", "/posts/create-and-publish", body);
 
@@ -508,16 +567,7 @@ async function cmdPostsUpdate(config, flags, positional) {
     process.exit(1);
   }
 
-  const body = {};
-  if (flags.text) body.content = flags.text;
-  if (flags.channels) body.channels = splitComma(flags.channels);
-  if (flags.schedule) body.scheduled_at = flags.schedule;
-  if (flags.type) body.type = flags.type;
-  if (flags["media-ids"]) body.media_ids = splitComma(flags["media-ids"]);
-  if (flags["media-urls"]) body.media_urls = splitComma(flags["media-urls"]);
-
-  const platformOpts = assemblePlatformOptions(flags);
-  Object.assign(body, platformOpts);
+  const body = buildPostBody(flags);
 
   const result = await apiRequest(config, "PATCH", `/posts/${id}`, body);
 
@@ -625,6 +675,136 @@ async function cmdMediaDelete(config, flags, positional) {
   }
 }
 
+const EXT_TO_MIME = {
+  jpg: "image/jpeg",
+  jpeg: "image/jpeg",
+  png: "image/png",
+  gif: "image/gif",
+  webp: "image/webp",
+  mp4: "video/mp4",
+  mov: "video/quicktime",
+  avi: "video/x-msvideo",
+};
+
+async function cmdMediaCheck(config, flags) {
+  const body = {};
+  if (flags.url) body.url = flags.url;
+  if (flags["media-id"]) body.media_id = flags["media-id"];
+  if (flags["size-bytes"]) body.size_bytes = Number(flags["size-bytes"]);
+  if (flags.mime) body.mime = flags.mime;
+
+  if (!body.url && !body.media_id && !(body.size_bytes && body.mime)) {
+    exitWithError(
+      "Usage: omnisocials media:check (--url <url> | --media-id <id> | --size-bytes <n> --mime <type>)"
+    );
+  }
+
+  // Response shape varies per platform; print raw JSON so nothing is hidden.
+  const result = await apiRequest(config, "POST", "/media/check", body);
+  handleResult(result, flags);
+}
+
+async function cmdMediaUploadBase64(config, flags) {
+  let data = flags.data;
+  let mime = flags["mime-type"] || flags.mime;
+  let filename = flags.filename;
+
+  // Convenience: --file <path> reads and base64-encodes a local file, inferring
+  // the MIME type from the extension (override with --mime-type).
+  if (flags.file) {
+    try {
+      data = fs.readFileSync(flags.file).toString("base64");
+    } catch (err) {
+      exitWithError(`Could not read --file ${flags.file}: ${err.message}`);
+    }
+    const ext = path.extname(flags.file).slice(1).toLowerCase();
+    mime = mime || EXT_TO_MIME[ext];
+    filename = filename || path.basename(flags.file);
+  }
+
+  if (!data || !mime) {
+    exitWithError(
+      "Usage: omnisocials media:upload-base64 (--file <path> | --data <base64> --mime-type <type>) [--filename --name --folder --folder-id]"
+    );
+  }
+
+  const body = { data, mime_type: mime };
+  if (filename) body.filename = filename;
+  if (flags.name) body.name = flags.name;
+  if (flags.folder) body.folder = flags.folder;
+  if (flags["folder-id"]) body.folder_id = flags["folder-id"];
+
+  const result = await apiRequest(config, "POST", "/media/upload-from-base64", body);
+  handleResult(result, flags, (d) => {
+    console.log("Media uploaded successfully!");
+    console.log(`ID: ${d.id}`);
+    console.log(`Type: ${d.type}`);
+    console.log(`Filename: ${d.filename}`);
+    console.log(`URL: ${d.url}`);
+  });
+}
+
+// --- Folders ---
+
+async function cmdFoldersList(config, flags) {
+  const result = await apiRequest(config, "GET", "/folders");
+  handleResult(result, flags, (data) => {
+    const folders = Array.isArray(data) ? data : [];
+    if (!folders.length) {
+      console.log("No folders found.");
+      return;
+    }
+    console.log(`Folders (${folders.length})`);
+    console.log("─".repeat(40));
+    for (const f of folders) {
+      const parent = f.parent_id ? `  [parent: ${f.parent_id}]` : "";
+      console.log(`ID: ${f.id}  ${f.name}  (${f.item_count ?? 0} items)${parent}`);
+    }
+  });
+}
+
+async function cmdFoldersCreate(config, flags) {
+  const name = flags.name;
+  if (!name) {
+    exitWithError('Usage: omnisocials folders:create --name "My Folder" [--parent-id <id>]');
+  }
+
+  const body = { name };
+  if (flags["parent-id"]) body.parent_id = flags["parent-id"];
+
+  const result = await apiRequest(config, "POST", "/folders", body);
+  handleResult(result, flags, (d) => {
+    console.log("Folder created successfully!");
+    console.log(`ID: ${d.id}`);
+    console.log(`Name: ${d.name}`);
+  });
+}
+
+// --- Locations (Instagram place tagging) ---
+
+async function cmdLocationsSearch(config, flags, positional) {
+  const q = flags.q || positional.join(" ");
+  if (!q || q.trim().length < 2) {
+    exitWithError(
+      'Usage: omnisocials locations:search "<place name>"  (min 2 chars; returns location_id values for Instagram posts)'
+    );
+  }
+
+  const result = await apiRequest(config, "GET", "/locations/search", undefined, { q });
+  handleResult(result, flags, (data) => {
+    const locations = Array.isArray(data) ? data : [];
+    if (!locations.length) {
+      console.log(`No taggable locations found for "${q}". Try a more specific venue name.`);
+      return;
+    }
+    console.log(`Locations matching "${q}" (${locations.length})`);
+    console.log("─".repeat(40));
+    for (const loc of locations) {
+      console.log(`location_id: ${loc.id}  ${loc.name}${loc.address ? `  — ${loc.address}` : ""}`);
+    }
+  });
+}
+
 // --- Accounts ---
 
 async function cmdAccountsList(config, flags) {
@@ -665,18 +845,104 @@ async function cmdAnalyticsPost(config, flags, positional) {
   const result = await apiRequest(config, "GET", `/analytics/posts/${id}`);
 
   handleResult(result, flags, (data) => {
+    // API returns { post_id, platforms: { <platform>: { metrics: {...} } } }.
+    // The old code read a flat data.impressions/platform_stats shape that this
+    // endpoint never returns, so every field printed N/A. Aggregate the
+    // per-platform metrics the same way the dashboard does (IG uses reach,
+    // others use views; engagement falls back to likes+comments+shares).
+    const platforms = data.platforms || {};
+    const entries = Object.entries(platforms);
     console.log(`Analytics for Post ${data.post_id || id}`);
     console.log("─".repeat(40));
-    console.log(`Impressions: ${data.impressions ?? "N/A"}`);
-    console.log(`Engagements: ${data.engagements ?? "N/A"}`);
-    console.log(`Likes: ${data.likes ?? "N/A"}`);
-    console.log(`Comments: ${data.comments ?? "N/A"}`);
-    console.log(`Shares: ${data.shares ?? "N/A"}`);
-    if (data.platform_stats) {
-      console.log("\nPer-platform:");
-      for (const [platform, stats] of Object.entries(data.platform_stats)) {
-        console.log(`  ${platform}: ${JSON.stringify(stats)}`);
+
+    if (!entries.length) {
+      console.log(
+        "No analytics collected yet. Stats are fetched periodically after publishing; check back in a few hours."
+      );
+      return;
+    }
+
+    const totals = { impressions: 0, engagements: 0, likes: 0, comments: 0, shares: 0 };
+    const perPlatform = [];
+    for (const [platform, entry] of entries) {
+      const m = (entry && entry.metrics) || {};
+      const impressions =
+        platform === "instagram"
+          ? Number(m.reach ?? m.impressions ?? 0)
+          : Number(m.views ?? m.impressions ?? 0);
+      const likes = Number(m.likes ?? m.favorites ?? m.reactions ?? 0);
+      const comments = Number(m.comments ?? m.replies ?? 0);
+      const shares = Number(m.shares ?? m.retweets ?? m.reposts ?? 0);
+      const engagements = m.engagement != null ? Number(m.engagement) : likes + comments + shares;
+      totals.impressions += impressions;
+      totals.engagements += engagements;
+      totals.likes += likes;
+      totals.comments += comments;
+      totals.shares += shares;
+      perPlatform.push({ platform, impressions, engagements, likes, comments, shares });
+    }
+
+    console.log(`Impressions: ${totals.impressions}`);
+    console.log(`Engagements: ${totals.engagements}`);
+    console.log(`Likes: ${totals.likes}`);
+    console.log(`Comments: ${totals.comments}`);
+    console.log(`Shares: ${totals.shares}`);
+    console.log("\nPer-platform:");
+    for (const p of perPlatform) {
+      console.log(
+        `  ${p.platform}: ${p.impressions} impressions, ${p.engagements} engagements (${p.likes} likes, ${p.comments} comments, ${p.shares} shares)`
+      );
+    }
+  });
+}
+
+async function cmdAnalyticsPosts(config, flags, positional) {
+  // Accept ids comma-separated, space-separated, or a mix:
+  //   analytics:posts 1024,1025   |   analytics:posts 1024 1025
+  const ids = positional
+    .join(",")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (ids.length === 0) {
+    console.error(
+      "Usage: omnisocials analytics:posts <id,id,...>  (up to 100 post ids, comma- or space-separated)"
+    );
+    process.exit(1);
+  }
+
+  const result = await apiRequest(config, "GET", "/analytics/posts", undefined, {
+    ids: ids.join(","),
+  });
+
+  handleResult(result, flags, (data) => {
+    // API returns { data: [{ post_id, platforms: { <platform>: { metrics } } }] }.
+    // result.data is that array. Total each post's per-platform metrics, using
+    // the same normalization as the dashboard (Instagram reach vs views, etc.).
+    const entries = Array.isArray(data) ? data : [];
+    console.log(`Analytics for ${entries.length} posts`);
+    console.log("─".repeat(40));
+    for (const entry of entries) {
+      const platforms = entry.platforms || {};
+      let impressions = 0;
+      let engagements = 0;
+      for (const [platform, p] of Object.entries(platforms)) {
+        const m = (p && p.metrics) || {};
+        const imp =
+          platform === "instagram"
+            ? Number(m.reach ?? m.impressions ?? 0)
+            : Number(m.views ?? m.impressions ?? 0);
+        const likes = Number(m.likes ?? m.favorites ?? m.reactions ?? 0);
+        const comments = Number(m.comments ?? m.replies ?? 0);
+        const shares = Number(m.shares ?? m.retweets ?? m.reposts ?? 0);
+        impressions += imp;
+        engagements += m.engagement != null ? Number(m.engagement) : likes + comments + shares;
       }
+      const names = Object.keys(platforms).join(", ") || "no stats collected yet";
+      console.log(
+        `Post ${entry.post_id}: ${impressions} impressions, ${engagements} engagements (${names})`
+      );
     }
   });
 }
@@ -826,7 +1092,11 @@ async function cmdWebhooksRotateSecret(config, flags, positional) {
 function showHelp() {
   console.log(`OmniSocials CLI v${VERSION}
 
-Manage social media across 10 platforms from the command line.
+Manage social media across 11 platforms from the command line.
+
+CHANNELS
+  instagram, facebook, linkedin (profile), linkedin_page (company page),
+  youtube, tiktok, x, pinterest, bluesky, threads, mastodon, google_business
 
 SETUP
   setup                          Configure your API key
@@ -845,7 +1115,16 @@ POSTS
 MEDIA
   media:list                     List media files [--limit --offset]
   media:upload                   Upload from URL [--url --filename]
+  media:upload-base64            Upload a local file or base64 [--file | --data --mime-type] [--name --folder --folder-id]
+  media:check                    Check media compatibility [--url | --media-id | --size-bytes --mime]
   media:delete <id>              Delete a media file
+
+FOLDERS
+  folders:list                   List media folders
+  folders:create                 Create a folder [--name --parent-id]
+
+LOCATIONS
+  locations:search "<name>"      Find Instagram location_id values for a place
 
 ACCOUNTS
   accounts:list                  List connected accounts
@@ -853,6 +1132,7 @@ ACCOUNTS
 
 ANALYTICS
   analytics:post <id>            Get post analytics
+  analytics:posts <id,id,...>    Get analytics for up to 100 posts in one call (bulk)
   analytics:overview             Workspace analytics [--period --start-date --end-date]
   analytics:accounts             Account analytics [--platform --date]
 
@@ -870,10 +1150,24 @@ GLOBAL FLAGS
   --base-url <url>               Override API base URL
   --help                         Show this help
 
-PLATFORM FLAGS (for posts:create / posts:update)
+POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
+  --channels <a,b>               Channel ids (see CHANNELS above)
+  --type <post|story|reel>       Content type
+  --schedule <ISO8601>           Schedule time (e.g. 2026-07-01T09:00:00Z)
+  --media-urls <url,url>         Attach media by URL
+  --media-ids <id,id>            Attach media from the library
+  --link-url <url>               Link preview (LinkedIn/Facebook); --link-title --link-description --link-thumbnail-url
+  --location-id <id>             Instagram place tag (from locations:search)
+  --collaborators <a,b>          Instagram co-author usernames (max 3)
+  --user-tags '<json>'           Instagram photo tags, JSON array [{"username","x","y","image_index?"}]
+  --x-thread "a || b || c"       Post an X thread; parts split on "||"
+
+PLATFORM FLAGS
   --pinterest-board-id           Pinterest board ID (required for Pinterest)
   --pinterest-title              Pinterest pin title
   --pinterest-link               Pinterest pin link
+  --pinterest-video-cover        Pinterest video cover image URL
+  --pinterest-alt-text           Pinterest pin alt text
   --youtube-title                YouTube video title
   --youtube-privacy              YouTube privacy (public/private/unlisted)
   --youtube-tags                 YouTube tags (comma-separated)
@@ -890,10 +1184,12 @@ PLATFORM FLAGS (for posts:create / posts:update)
 
 EXAMPLES
   omnisocials accounts:list
-  omnisocials posts:create --text "Hello world!" --channels instagram,linkedin
+  omnisocials posts:create --text "Hello world!" --channels instagram,linkedin,linkedin_page
   omnisocials posts:create --text "New video!" --channels youtube --type reel --media-urls "https://example.com/video.mp4" --youtube-title "My Video" --youtube-privacy public
+  omnisocials posts:create --text "Thread time" --channels x --x-thread "First tweet || Second tweet || Third"
+  omnisocials locations:search "Blue Bottle Coffee"
   omnisocials posts:list --status scheduled --json
-  omnisocials media:upload --url "https://example.com/photo.jpg"
+  omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
 
 Learn more: https://docs.omnisocials.com`);
 }
@@ -912,10 +1208,16 @@ const COMMANDS = {
   "posts:delete": { handler: cmdPostsDelete },
   "media:list": { handler: cmdMediaList },
   "media:upload": { handler: cmdMediaUpload },
+  "media:upload-base64": { handler: cmdMediaUploadBase64 },
+  "media:check": { handler: cmdMediaCheck },
   "media:delete": { handler: cmdMediaDelete },
+  "folders:list": { handler: cmdFoldersList },
+  "folders:create": { handler: cmdFoldersCreate },
+  "locations:search": { handler: cmdLocationsSearch },
   "accounts:list": { handler: cmdAccountsList },
   "accounts:get": { handler: cmdAccountsGet },
   "analytics:post": { handler: cmdAnalyticsPost },
+  "analytics:posts": { handler: cmdAnalyticsPosts },
   "analytics:overview": { handler: cmdAnalyticsOverview },
   "analytics:accounts": { handler: cmdAnalyticsAccounts },
   "webhooks:list": { handler: cmdWebhooksList },

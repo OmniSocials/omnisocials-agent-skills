@@ -2,12 +2,33 @@ import { describe, it, expect } from "vitest";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
+import os from "node:os";
+import fs from "node:fs";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(__dirname, "../scripts/omnisocials.js");
 
-function run(args) {
-  return exec("node", [CLI, ...args], { timeout: 10000 }).then(
+// Run the CLI in an ISOLATED environment so tests don't pick up a real config:
+//   - a fresh empty cwd (no ./.omnisocials/config.json)
+//   - HOME/USERPROFILE pointed at that empty dir (no ~/.config/omnisocials)
+//   - OMNISOCIALS_API_KEY stripped from the inherited env
+// Without this, "without config" tests fail on any machine where the developer
+// has actually configured the CLI.
+const ISOLATED_DIR = fs.mkdtempSync(path.join(os.tmpdir(), "omni-cli-test-"));
+
+function isolatedEnv(extra = {}) {
+  const env = { ...process.env, HOME: ISOLATED_DIR, USERPROFILE: ISOLATED_DIR };
+  delete env.OMNISOCIALS_API_KEY;
+  delete env.OMNISOCIALS_BASE_URL;
+  return { ...env, ...extra };
+}
+
+function run(args, { env } = {}) {
+  return exec("node", [CLI, ...args], {
+    timeout: 10000,
+    cwd: ISOLATED_DIR,
+    env: isolatedEnv(env),
+  }).then(
     ({ stdout, stderr }) => ({ stdout, stderr, exitCode: 0 }),
     (err) => ({ stdout: err.stdout || "", stderr: err.stderr || "", exitCode: err.code })
   );
@@ -101,10 +122,10 @@ describe("CLI basics", () => {
 describe("config:show with env var", () => {
   it("reads API key from env", async () => {
     const testKey = ["omsk", "test", "fakekeyfortesting"].join("_");
-    const { stdout, exitCode } = await exec("node", [CLI, "config:show"], {
-      env: { ...process.env, OMNISOCIALS_API_KEY: testKey },
+    const { stdout, exitCode } = await run(["config:show"], {
+      env: { OMNISOCIALS_API_KEY: testKey },
     });
-    expect(exitCode ?? 0).toBe(0);
+    expect(exitCode).toBe(0);
     expect(stdout).toContain("omsk_test_fake");
     expect(stdout).toContain("env var");
   });
