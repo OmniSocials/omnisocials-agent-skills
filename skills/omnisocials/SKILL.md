@@ -67,6 +67,8 @@ IMPORTANT: Follow these rules at all times.
 | "Create a reel for TikTok" | `posts:create --text "..." --channels <tiktok_id> --type reel --media-urls "https://video.mp4"` |
 | "Post to all platforms" | `accounts:list`, then `posts:create --text "..." --channels <all_ids>` |
 | "Post a thread to X" | `posts:create --channels <x_id> --x-thread "part 1 || part 2 || part 3"` |
+| "Post a thread to Bluesky" | `posts:create --channels <bluesky_id> --bluesky-thread "part 1 || part 2 || part 3"` |
+| "Post a thread to Mastodon" | `posts:create --channels <mastodon_id> --mastodon-thread "part 1 || part 2 || part 3"` |
 | "Tag a location on Instagram" | `locations:search "<place name>"`, then `posts:create ... --location-id <id>` |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
 | "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
@@ -115,6 +117,7 @@ Follow this workflow when creating posts:
 |---|---|
 | `posts:list` | List posts. Flags: `--status draft\|scheduled\|published\|failed`, `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
+| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns captions, format, timestamps, and normalized engagement/impressions where the platform exposes them. Flags: `--limit` (1-50, default 25), `--platforms` (comma-separated filter). Requires the `analytics:read` scope. |
 | `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
 | `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create` |
@@ -126,8 +129,9 @@ Follow this workflow when creating posts:
 | Command | Description |
 |---|---|
 | `media:list` | List uploaded media files. Flags: `--limit`, `--offset` |
-| `media:upload` | Upload media from URL (max 50MB). Flags: `--url` (required), `--filename` |
-| `media:upload-base64` | Upload a local file or base64 data. Flags: `--file <path>` (auto-encodes + infers MIME) OR `--data` + `--mime-type`; plus `--filename`, `--name` (findable label), `--folder`, `--folder-id` |
+| `media:upload` | Upload media from a URL — image, video, or PDF. Flags: `--url` (required), `--filename` |
+| `media:upload-base64` | Upload a local file or base64 data (image, video, or PDF). Flags: `--file <path>` (auto-encodes + infers MIME, incl. `.pdf`) OR `--data` + `--mime-type`; plus `--filename`, `--name` (findable label), `--folder`, `--folder-id` |
+| PDF carousels | Upload a **PDF** and it is split into one image slide per page (max 20). The response lists a media ID for every slide — pass **all** of them to `posts:create --media-ids` to post the deck as a carousel. On LinkedIn the slides post as a native swipeable **document**; on Instagram, TikTok, Threads and Pinterest as an image carousel. Lets you post an existing deck (Canva/PowerPoint/Figma exported to PDF) without exporting each slide by hand. |
 | `media:check` | Check whether media fits target platforms before posting. Flags: `--url`, or `--media-id`, or `--size-bytes` + `--mime` |
 | `media:delete <id>` | Delete a media file |
 
@@ -155,7 +159,7 @@ Follow this workflow when creating posts:
 
 | Command | Description |
 |---|---|
-| `analytics:post <post-id>` | Get post analytics: impressions, engagements, likes, comments, shares, per-platform stats |
+| `analytics:post <post-id>` | Get post analytics: impressions, engagements, likes, comments, shares, per-platform stats (thread posts on X/Bluesky/Mastodon are summed across their parts) |
 | `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
 | `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD` |
@@ -242,6 +246,8 @@ All commands support these flags:
 |---|---|
 | `--x-reply-settings` | Who can reply: `following` or `mentionedUsers` (empty string = everyone) |
 | `--x-thread "a \|\| b \|\| c"` | Post a thread. Parts are split on `\|\|` (2–25 parts). For per-tweet media, build the post with `--json` and a full `x.thread_parts` array instead. |
+| `--bluesky-thread "a \|\| b \|\| c"` | Post a Bluesky thread. Parts are split on `\|\|` (2–25 parts, each ≤ 300 chars). Links, mentions and hashtags become clickable automatically. For per-post media, build the post with `--json` and a full `bluesky.thread_parts` array instead. |
+| `--mastodon-thread "a \|\| b \|\| c"` | Post a Mastodon thread. Parts are split on `\|\|` (2–25 parts, each ≤ 500 chars). Each toot replies to the previous one natively. For per-toot media, build the post with `--json` and a full `mastodon.thread_parts` array instead. |
 
 #### Link preview (LinkedIn / Facebook)
 | Flag | Description |
@@ -320,6 +326,16 @@ The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram":
 ./scripts/omnisocials.js posts:create --text "Kicking off a thread" --channels <x_id> --x-thread "First point || Second point || Wrapping up"
 ```
 
+### Post a Bluesky thread
+```
+./scripts/omnisocials.js posts:create --channels <bluesky_id> --bluesky-thread "First point || Second point || Wrapping up"
+```
+
+### Post a Mastodon thread
+```
+./scripts/omnisocials.js posts:create --channels <mastodon_id> --mastodon-thread "First point || Second point || Wrapping up"
+```
+
 ### Tag an Instagram location
 ```
 ./scripts/omnisocials.js locations:search "Blue Bottle Coffee"
@@ -339,6 +355,12 @@ The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram":
 ### Bulk analytics for many posts (one request)
 ```
 ./scripts/omnisocials.js analytics:posts 1024,1025,1026
+```
+
+### Audit a brand-new workspace's existing content (nothing posted via OmniSocials yet)
+```
+./scripts/omnisocials.js posts:recent-platform --limit 25
+./scripts/omnisocials.js posts:recent-platform --platforms instagram,tiktok --json
 ```
 
 ### Post to a LinkedIn company page

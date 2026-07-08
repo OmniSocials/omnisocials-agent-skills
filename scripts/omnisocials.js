@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.2.0";
+const VERSION = "1.5.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -279,6 +279,32 @@ function buildPostBody(flags) {
     if (parts.length) body.x = { ...(body.x || {}), thread_parts: parts };
   }
 
+  // Bluesky thread: same "||"-separated CLI form as --x-thread.
+  //   --bluesky-thread "first post || second post || third"
+  // For per-post media use --json with a full thread_parts array instead.
+  if (flags["bluesky-thread"]) {
+    const parts = String(flags["bluesky-thread"])
+      .split("||")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((text) => ({ text }));
+    if (parts.length)
+      body.bluesky = { ...(body.bluesky || {}), thread_parts: parts };
+  }
+
+  // Mastodon thread: same "||"-separated CLI form as --x-thread.
+  //   --mastodon-thread "first toot || second toot || third"
+  // For per-toot media use --json with a full thread_parts array instead.
+  if (flags["mastodon-thread"]) {
+    const parts = String(flags["mastodon-thread"])
+      .split("||")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((text) => ({ text }));
+    if (parts.length)
+      body.mastodon = { ...(body.mastodon || {}), thread_parts: parts };
+  }
+
   // Merge per-platform option objects (pinterest/youtube/instagram/tiktok/x),
   // preserving any keys already set above (e.g. x.thread_parts).
   const platformOpts = assemblePlatformOptions(flags);
@@ -328,6 +354,7 @@ function formatPost(post, index) {
   if (post.published_urls && Object.keys(post.published_urls).length) {
     lines.push(`    Published: ${Object.values(post.published_urls).join(", ")}`);
   }
+  if (post.app_url) lines.push(`    Open in OmniSocials: ${post.app_url}`);
   lines.push(`    Created: ${post.created_at}`);
   return lines.join("\n");
 }
@@ -526,6 +553,54 @@ async function cmdPostsGet(config, flags, positional) {
   handleResult(result, flags);
 }
 
+async function cmdPostsRecentPlatform(config, flags) {
+  // Fetches recent posts live from the connected platform APIs (including
+  // content published outside OmniSocials). The fallback for brand-new
+  // workspaces where posts:list is empty. Requires the analytics:read scope.
+  const result = await apiRequest(config, "GET", "/posts/recent-platform", undefined, {
+    limit: flags.limit,
+    platforms: flags.platforms,
+  });
+
+  handleResult(result, flags, (data) => {
+    const posts = Array.isArray(data) ? data : [];
+    const connected = result.connected_platforms || [];
+    const errors = result.errors || {};
+    const errEntries = Object.entries(errors);
+
+    if (!posts.length) {
+      console.log(result.note || "No recent platform posts found.");
+      if (errEntries.length) {
+        console.log("\nFetch errors:");
+        for (const [p, m] of errEntries) console.log(`  ${p}: ${m}`);
+      }
+      return;
+    }
+
+    console.log(
+      `Recent platform posts (${posts.length} across ${connected.length} platform${connected.length === 1 ? "" : "s"})`
+    );
+    console.log("─".repeat(40));
+    for (let i = 0; i < posts.length; i++) {
+      const p = posts[i];
+      const hasMetrics = p.metrics && Object.keys(p.metrics).length > 0;
+      const caption = (p.text || "").replace(/\s+/g, " ").trim();
+      const snippet =
+        caption.length > 70 ? caption.slice(0, 69) + "…" : caption || "(no caption)";
+      const metricStr = hasMetrics
+        ? `${p.engagement} engagements, ${p.impressions} impressions`
+        : "no metrics from this platform";
+      console.log(`${i + 1}. [${p.platform}] ${p.format} — ${metricStr}`);
+      console.log(`   ${snippet}`);
+    }
+    if (result.note) console.log(`\n${result.note}`);
+    if (errEntries.length) {
+      console.log("\nFetch errors:");
+      for (const [p, m] of errEntries) console.log(`  ${p}: ${m}`);
+    }
+  });
+}
+
 async function cmdPostsCreate(config, flags) {
   const text = flags.text;
   if (!text) {
@@ -543,6 +618,7 @@ async function cmdPostsCreate(config, flags) {
     console.log(`Status: ${data.status}`);
     const scheduledAt = data.schedule_at || data.scheduled_at;
     if (scheduledAt) console.log(`Scheduled: ${scheduledAt}`);
+    if (data.app_url) console.log(`Open in OmniSocials: ${data.app_url}`);
   });
 }
 
@@ -565,6 +641,7 @@ async function cmdPostsCreateAndPublish(config, flags) {
     console.log(`Post created and publishing!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
+    if (data.app_url) console.log(`Open in OmniSocials: ${data.app_url}`);
   });
 }
 
@@ -655,6 +732,7 @@ async function cmdMediaUpload(config, flags) {
   const result = await apiRequest(config, "POST", "/media/upload-from-url", body);
 
   handleResult(result, flags, (data) => {
+    if (printPdfUploadResult(result)) return;
     console.log("Media uploaded successfully!");
     console.log(`ID: ${data.id}`);
     console.log(`Type: ${data.type}`);
@@ -692,7 +770,30 @@ const EXT_TO_MIME = {
   mp4: "video/mp4",
   mov: "video/quicktime",
   avi: "video/x-msvideo",
+  pdf: "application/pdf",
 };
+
+// Print an upload result, handling the PDF carousel shape (a PDF is split into
+// one image slide per page; the response carries slides + media_ids). Returns
+// true if it handled a PDF result, false for a normal single-media result.
+function printPdfUploadResult(result) {
+  if (!Array.isArray(result.media_ids) || !result.media_ids.length) return false;
+  console.log(
+    `PDF uploaded and split into ${result.media_ids.length} image slide(s).`
+  );
+  if (result.pdf && result.pdf.truncated) {
+    console.log(
+      `(imported the first ${result.pdf.rendered_pages} of ${result.pdf.total_pages} pages; max 20)`
+    );
+  }
+  console.log(
+    `Slide media IDs (pass ALL to posts:create --media-ids): ${result.media_ids.join(",")}`
+  );
+  console.log(
+    "On LinkedIn these post as a swipeable document carousel; on Instagram, TikTok, Threads and Pinterest as an image carousel."
+  );
+  return true;
+}
 
 async function cmdMediaCheck(config, flags) {
   const body = {};
@@ -745,6 +846,7 @@ async function cmdMediaUploadBase64(config, flags) {
 
   const result = await apiRequest(config, "POST", "/media/upload-from-base64", body);
   handleResult(result, flags, (d) => {
+    if (printPdfUploadResult(result)) return;
     console.log("Media uploaded successfully!");
     console.log(`ID: ${d.id}`);
     console.log(`Type: ${d.type}`);
@@ -855,6 +957,8 @@ async function cmdAnalyticsPost(config, flags, positional) {
 
   handleResult(result, flags, (data) => {
     // API returns { post_id, platforms: { <platform>: { metrics: {...} } } }.
+    // Each platform's metrics are already summed across thread parts server-side
+    // (thread posts publish as a chain), so we just total across platforms here.
     // The old code read a flat data.impressions/platform_stats shape that this
     // endpoint never returns, so every field printed N/A. Aggregate the
     // per-platform metrics the same way the dashboard does (IG uses reach,
@@ -1124,6 +1228,7 @@ SETUP
 POSTS
   posts:list                     List posts [--status --limit --offset]
   posts:get <id>                 Get post details
+  posts:recent-platform          Fetch recent posts live from connected platforms [--limit --platforms] (analytics:read)
   posts:create                   Create a post [--text --channels --schedule --type --media-urls --media-ids]
   posts:create-and-publish       Create and publish immediately
   posts:update <id>              Update a draft/scheduled post
@@ -1132,10 +1237,11 @@ POSTS
 
 MEDIA
   media:list                     List media files [--limit --offset]
-  media:upload                   Upload from URL [--url --filename]
+  media:upload                   Upload from URL (image, video, or PDF) [--url --filename]
   media:upload-base64            Upload a local file or base64 [--file | --data --mime-type] [--name --folder --folder-id]
   media:check                    Check media compatibility [--url | --media-id | --size-bytes --mime]
   media:delete <id>              Delete a media file
+  (PDF: a PDF is split into one image slide per page — pass all returned media IDs to posts:create as a carousel)
 
 FOLDERS
   folders:list                   List media folders
@@ -1179,6 +1285,8 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --collaborators <a,b>          Instagram co-author usernames (max 3)
   --user-tags '<json>'           Instagram photo tags, JSON array [{"username","x","y","image_index?"}]
   --x-thread "a || b || c"       Post an X thread; parts split on "||"
+  --bluesky-thread "a || b || c" Post a Bluesky thread; parts split on "||"
+  --mastodon-thread "a || b || c" Post a Mastodon thread; parts split on "||"
 
 PLATFORM FLAGS
   --pinterest-board-id           Pinterest board ID (required for Pinterest)
@@ -1219,6 +1327,7 @@ const COMMANDS = {
   "config:show": { handler: cmdConfigShow, noAuth: true },
   "posts:list": { handler: cmdPostsList },
   "posts:get": { handler: cmdPostsGet },
+  "posts:recent-platform": { handler: cmdPostsRecentPlatform },
   "posts:create": { handler: cmdPostsCreate },
   "posts:create-and-publish": { handler: cmdPostsCreateAndPublish },
   "posts:update": { handler: cmdPostsUpdate },
