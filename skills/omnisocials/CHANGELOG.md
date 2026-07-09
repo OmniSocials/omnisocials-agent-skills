@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.7.0 (2026-07-09)
+
+### Added
+- Set an **automatic first comment** from the CLI. New per-platform flags on `posts:create`, `posts:create-and-publish`, and `posts:update`: `--instagram-first-comment`, `--facebook-first-comment`, `--linkedin-first-comment`, `--linkedin-page-first-comment`, and `--youtube-first-comment`. The text is posted as the first comment right after the post publishes, so you can keep hashtags or a link out of the main caption (e.g. `--instagram-first-comment "#reels #marketing\nlink: https://example.com"`). Facebook works on Page posts only; first comments are not posted for stories, and YouTube requires the video to allow comments.
+
+### Fixed
+- `--help` / `--version` now report the correct version (the CLI version string had lagged behind the package version).
+
 ## 1.6.0 (2026-07-08)
 
 ### Added

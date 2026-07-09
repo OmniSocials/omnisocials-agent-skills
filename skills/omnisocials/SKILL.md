@@ -232,6 +232,17 @@ All commands support these flags:
 | `--instagram-cover-url` | Reel cover image URL |
 | `--instagram-thumbnail-type` | Thumbnail type: `from-video` or `from-library` |
 
+#### Auto first comment (Instagram, Facebook, LinkedIn, YouTube)
+Posts the given text as the first comment automatically, right after the post publishes. Common for keeping hashtags or a link out of the main caption. One flag per channel, so you can set a different first comment per platform in the same call. Not posted for stories.
+
+| Flag | Description |
+|---|---|
+| `--instagram-first-comment` | First comment on the Instagram post/reel (max 2200 chars) |
+| `--facebook-first-comment` | First comment on the Facebook post. **Page posts only** (the API cannot comment on personal profiles) |
+| `--linkedin-first-comment` | First comment on the LinkedIn profile post (max 1250 chars). Handy for "link in first comment" |
+| `--linkedin-page-first-comment` | First comment on the LinkedIn company page post (max 1250 chars) |
+| `--youtube-first-comment` | First comment on the YouTube video (max 10000 chars). The video must allow comments |
+
 #### TikTok
 | Flag | Description |
 |---|---|
@@ -291,6 +302,12 @@ The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram":
 ### Create an Instagram reel with cover image
 ```
 ./scripts/omnisocials.js posts:create --text "Check this out" --channels <instagram_id> --type reel --media-urls "https://example.com/video.mp4" --instagram-share-to-feed --instagram-cover-url "https://example.com/cover.jpg"
+```
+
+### Reel with hashtags and a link in the auto first comment
+```
+./scripts/omnisocials.js posts:create --text "New drop is live" --channels <instagram_id> --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #newdrop #marketing
+link: https://example.com/shop"
 ```
 
 ### Schedule a post for next week

@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.5.0";
+const VERSION = "1.7.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -197,12 +197,26 @@ function assemblePlatformOptions(flags) {
       "youtube-made-for-kids": { key: "made_for_kids", transform: (v) => v === true || v === "true" },
       "youtube-notify-subscribers": { key: "notify_subscribers", transform: (v) => v === true || v === "true" },
       "youtube-contains-synthetic-media": { key: "contains_synthetic_media", transform: (v) => v === true || v === "true" },
+      "youtube-first-comment": "first_comment",
     },
     instagram: {
       "instagram-share-to-feed": { key: "share_to_feed", transform: (v) => v === true || v === "true" },
       "instagram-cover-url": "cover_url",
       "instagram-thumbnail-type": "thumbnail_type",
       "instagram-thumb-offset": { key: "thumb_offset", transform: Number },
+      "instagram-first-comment": "first_comment",
+    },
+    // Comment-capable platforms whose only CLI option (so far) is the auto
+    // first comment. Posted right after publish — handy for keeping hashtags or
+    // a link out of the main caption. Facebook is Page posts only.
+    facebook: {
+      "facebook-first-comment": "first_comment",
+    },
+    linkedin: {
+      "linkedin-first-comment": "first_comment",
+    },
+    linkedin_page: {
+      "linkedin-page-first-comment": "first_comment",
     },
     tiktok: {
       "tiktok-privacy": "privacy_level",
@@ -1299,8 +1313,13 @@ PLATFORM FLAGS
   --youtube-tags                 YouTube tags (comma-separated)
   --youtube-category-id          YouTube category ID
   --youtube-made-for-kids        YouTube made for kids flag
+  --youtube-first-comment        Auto first comment on the video (video must allow comments)
   --instagram-share-to-feed      Share Instagram reel to feed
   --instagram-cover-url          Instagram reel cover image URL
+  --instagram-first-comment      Auto first comment on the post/reel (great for hashtags; not for stories)
+  --facebook-first-comment       Auto first comment on the Facebook Page post (Page posts only)
+  --linkedin-first-comment       Auto first comment on the LinkedIn profile post (e.g. link in first comment)
+  --linkedin-page-first-comment  Auto first comment on the LinkedIn company page post
   --tiktok-privacy               TikTok privacy level
   --tiktok-disable-comment       Disable TikTok comments
   --tiktok-disable-duet          Disable TikTok duets
@@ -1313,6 +1332,7 @@ EXAMPLES
   omnisocials posts:create --text "Hello world!" --channels instagram,linkedin,linkedin_page
   omnisocials posts:create --text "New video!" --channels youtube --type reel --media-urls "https://example.com/video.mp4" --youtube-title "My Video" --youtube-privacy public
   omnisocials posts:create --text "Thread time" --channels x --x-thread "First tweet || Second tweet || Third"
+  omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
   omnisocials locations:search "Blue Bottle Coffee"
   omnisocials posts:list --status scheduled --json
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
