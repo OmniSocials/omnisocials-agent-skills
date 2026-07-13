@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.7.0";
+const VERSION = "1.8.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1109,6 +1109,35 @@ async function cmdAnalyticsAccounts(config, flags) {
   handleResult(result, flags);
 }
 
+async function cmdAnalyticsBestTimes(config, flags) {
+  if (!flags.platform) {
+    console.error("Usage: omnisocials analytics:best-times --platform <platform> [--timezone <IANA tz>]");
+    process.exit(1);
+  }
+  const result = await apiRequest(config, "GET", "/analytics/best-times", undefined, {
+    platform: flags.platform,
+    timezone: flags.timezone,
+  });
+
+  // Response is a top-level object (no data wrapper) — render from the closure.
+  handleResult(result, flags, () => {
+    const cap = (v) => (typeof v === "string" && v ? v.charAt(0).toUpperCase() + v.slice(1) : v);
+    console.log(`Best times to post — ${cap(result.platform)} (${result.timezone})`);
+    console.log("─".repeat(40));
+    (result.recommendations || []).forEach((r, i) => {
+      const extras = [];
+      if (r.typical_engagement) extras.push(`~${r.typical_engagement} typical engagement`);
+      if (r.n) extras.push(`${r.n} posts`);
+      console.log(`${i + 1}. ${cap(r.day)} ${r.time}  (score ${r.score}${extras.length ? `, ${extras.join(", ")}` : ""})`);
+    });
+    if (result.basis === "defaults") {
+      console.log(`\nNot enough posting history yet (${result.sample_size} analyzed posts). These are cross-industry averages. Publish ${result.posts_needed} more posts on this platform to unlock recommendations from your own audience data.`);
+    } else {
+      console.log(`\nBased on ${result.sample_size} posts from the last ${result.window_days} days (metric: ${result.metric}, times in ${result.timezone}).`);
+    }
+  });
+}
+
 // --- Webhooks ---
 
 async function cmdWebhooksList(config, flags) {
@@ -1273,6 +1302,7 @@ ANALYTICS
   analytics:posts <id,id,...>    Get analytics for up to 100 posts in one call (bulk)
   analytics:overview             Workspace analytics [--period --start-date --end-date]
   analytics:accounts             Account analytics [--platform --date]
+  analytics:best-times           Recommended posting slots [--platform (required) --timezone]
 
 WEBHOOKS
   webhooks:list                  List webhooks
@@ -1367,6 +1397,7 @@ const COMMANDS = {
   "analytics:posts": { handler: cmdAnalyticsPosts },
   "analytics:overview": { handler: cmdAnalyticsOverview },
   "analytics:accounts": { handler: cmdAnalyticsAccounts },
+  "analytics:best-times": { handler: cmdAnalyticsBestTimes },
   "webhooks:list": { handler: cmdWebhooksList },
   "webhooks:create": { handler: cmdWebhooksCreate },
   "webhooks:get": { handler: cmdWebhooksGet },

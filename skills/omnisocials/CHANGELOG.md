@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.8.0 (2026-07-13)
+
+### Added
+- **Best time to post.** `analytics:best-times --platform <platform> [--timezone <IANA tz>]` returns the top 3 recommended posting slots plus per-day scores, computed from the workspace's own posting history (publish time × engagement, recency-weighted, outlier-damped, bucketed in the account's timezone). With fewer than 15 analyzed posts on the platform the CLI prints clearly-labeled cross-industry defaults and how many more posts unlock personal recommendations. Requires the `analytics:read` scope.
+
+### Changed
+- `posts:recent-platform` docs: Instagram posts now include reach/views/saves/shares from per-post insights (API-side improvement).
+- PDF support documented for `--media-urls`: a PDF URL is rasterized into one image slide per page (max 20, in order) — LinkedIn publishes it as a swipeable document, other platforms as an image carousel.
+
 ## 1.7.0 (2026-07-09)
 
 ### Added

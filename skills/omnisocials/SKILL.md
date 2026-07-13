@@ -117,7 +117,7 @@ Follow this workflow when creating posts:
 |---|---|
 | `posts:list` | List posts. Flags: `--status draft\|scheduled\|published\|failed`, `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
-| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns captions, format, timestamps, and normalized engagement/impressions where the platform exposes them. Flags: `--limit` (1-50, default 25), `--platforms` (comma-separated filter). Requires the `analytics:read` scope. |
+| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns captions, format, timestamps, and normalized engagement/impressions where the platform exposes them (Instagram includes reach/views/saves/shares from per-post insights). Flags: `--limit` (1-50, default 25), `--platforms` (comma-separated filter). Requires the `analytics:read` scope. |
 | `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
 | `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create` |
@@ -160,6 +160,7 @@ Follow this workflow when creating posts:
 | Command | Description |
 |---|---|
 | `analytics:post <post-id>` | Get post analytics: impressions, engagements, likes, comments, shares, per-platform stats (thread posts on X/Bluesky/Mastodon are summed across their parts) |
+| `analytics:best-times` | Recommended posting slots (day + hour) for one platform, computed from the workspace's own posting history (recency-weighted, outlier-damped, in the account's timezone). Top 3 slots + per-day scores. Under 15 analyzed posts it returns clearly-labeled industry defaults with `posts_needed` — tell the user that. Use before scheduling when no time was specified. Flags: `--platform` (required), `--timezone` (IANA override). Requires `analytics:read`. |
 | `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
 | `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD` |
@@ -286,6 +287,8 @@ Media can be the same across all platforms or different per platform:
 
 **Different media per platform** (use `--json` flag and API directly for per-platform media objects):
 The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram": ["url2"], "pinterest": ["url3"] }`. The `default` key is the fallback for platforms without their own key. Pass an empty array to opt a platform out of media.
+
+**PDF by URL:** a PDF passed via `--media-urls` (or `media_urls` in the API) is rasterized into one image slide per page (max 20, in order) — on LinkedIn it publishes as a swipeable document, elsewhere as an image carousel. Same behaviour as uploading the PDF via `media:upload`.
 
 ## Examples
 
