@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.8.0";
+const VERSION = "1.9.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -601,8 +601,14 @@ async function cmdPostsRecentPlatform(config, flags) {
       const caption = (p.text || "").replace(/\s+/g, " ").trim();
       const snippet =
         caption.length > 70 ? caption.slice(0, 69) + "…" : caption || "(no caption)";
+      // Every counter the platform reported (reach, views, saves, …), not just
+      // the two normalized headline numbers.
+      const detail = metricRows(p.metrics)
+        .filter(([label]) => label !== "engagements")
+        .map(([label, n]) => `${n} ${label}`)
+        .join(", ");
       const metricStr = hasMetrics
-        ? `${p.engagement} engagements, ${p.impressions} impressions`
+        ? `${p.engagement} engagements${detail ? ` — ${detail}` : ""}`
         : "no metrics from this platform";
       console.log(`${i + 1}. [${p.platform}] ${p.format} — ${metricStr}`);
       console.log(`   ${snippet}`);
@@ -960,6 +966,59 @@ async function cmdAccountsGet(config, flags, positional) {
 
 // --- Analytics ---
 
+// Canonical render order + labels for per-platform metric objects. Any numeric
+// key the API returns that isn't listed here still renders (prettified from
+// snake_case) so no metric is ever silently dropped — reach/saves/views used to
+// vanish because the renderers printed a fixed field set. Mirrors the MCP
+// server's metricRows.
+const METRIC_LABELS = [
+  ["impressions", "impressions"],
+  ["reach", "reach"],
+  ["views", "views"],
+  ["likes", "likes"],
+  ["comments", "comments"],
+  ["shares", "shares"],
+  ["saves", "saves"],
+  ["clicks", "clicks"],
+  ["reposts", "reposts"],
+  ["quotes", "quotes"],
+  ["bookmarks", "bookmarks"],
+  ["replies", "replies"],
+  ["reactions", "reactions"],
+  ["total_reactions", "total reactions"],
+  ["favorites", "favorites"],
+  ["plays", "plays"],
+  ["engagement", "engagements"],
+];
+
+// Context keys that ride along in stored metrics — not counters.
+const NON_COUNTER_KEYS = new Set(["create_time"]);
+
+// Flatten a raw metrics object into ordered [label, value] pairs, keeping every
+// numeric counter the platform reported. Strings (note, title, cover_image_url)
+// are skipped; `plays` is a legacy always-0 Instagram back-compat key so a zero
+// there is noise, not data.
+function metricRows(m) {
+  const rows = [];
+  const seen = new Set();
+  for (const [key, label] of METRIC_LABELS) {
+    const v = m?.[key];
+    if (v === undefined || v === null) continue;
+    const n = Number(v);
+    if (!Number.isFinite(n)) continue;
+    seen.add(key);
+    if (key === "plays" && n === 0) continue;
+    rows.push([label, n]);
+  }
+  for (const [key, v] of Object.entries(m || {})) {
+    if (seen.has(key) || NON_COUNTER_KEYS.has(key)) continue;
+    const n = Number(v);
+    if (!Number.isFinite(n)) continue;
+    rows.push([key.replace(/_/g, " "), n]);
+  }
+  return rows;
+}
+
 async function cmdAnalyticsPost(config, flags, positional) {
   const id = positional[0];
   if (!id) {
@@ -993,10 +1052,9 @@ async function cmdAnalyticsPost(config, flags, positional) {
     const perPlatform = [];
     for (const [platform, entry] of entries) {
       const m = (entry && entry.metrics) || {};
-      const impressions =
-        platform === "instagram"
-          ? Number(m.reach ?? m.impressions ?? 0)
-          : Number(m.views ?? m.impressions ?? 0);
+      // Broadest exposure count present, regardless of the platform's name for
+      // it (LinkedIn: impressions, TikTok/X/YouTube: views, IG: reach).
+      const impressions = Number(m.impressions ?? m.views ?? m.reach ?? 0);
       const likes = Number(m.likes ?? m.favorites ?? m.reactions ?? 0);
       const comments = Number(m.comments ?? m.replies ?? 0);
       const shares = Number(m.shares ?? m.retweets ?? m.reposts ?? 0);
@@ -1006,7 +1064,7 @@ async function cmdAnalyticsPost(config, flags, positional) {
       totals.likes += likes;
       totals.comments += comments;
       totals.shares += shares;
-      perPlatform.push({ platform, impressions, engagements, likes, comments, shares });
+      perPlatform.push({ platform, metrics: m, engagements });
     }
 
     console.log(`Impressions: ${totals.impressions}`);
@@ -1014,11 +1072,11 @@ async function cmdAnalyticsPost(config, flags, positional) {
     console.log(`Likes: ${totals.likes}`);
     console.log(`Comments: ${totals.comments}`);
     console.log(`Shares: ${totals.shares}`);
-    console.log("\nPer-platform:");
+    console.log("\nPer-platform (every metric the platform reported):");
     for (const p of perPlatform) {
-      console.log(
-        `  ${p.platform}: ${p.impressions} impressions, ${p.engagements} engagements (${p.likes} likes, ${p.comments} comments, ${p.shares} shares)`
-      );
+      const parts = metricRows(p.metrics).map(([label, n]) => `${n} ${label}`);
+      const note = typeof p.metrics.note === "string" ? `\n    note: ${p.metrics.note}` : "";
+      console.log(`  ${p.platform}: ${parts.join(", ") || "no metrics"}${note}`);
     }
   });
 }
@@ -1054,16 +1112,13 @@ async function cmdAnalyticsPosts(config, flags, positional) {
       const platforms = entry.platforms || {};
       let impressions = 0;
       let engagements = 0;
-      for (const [platform, p] of Object.entries(platforms)) {
+      for (const [, p] of Object.entries(platforms)) {
         const m = (p && p.metrics) || {};
-        const imp =
-          platform === "instagram"
-            ? Number(m.reach ?? m.impressions ?? 0)
-            : Number(m.views ?? m.impressions ?? 0);
+        // Broadest exposure count present (impressions / views / reach).
+        impressions += Number(m.impressions ?? m.views ?? m.reach ?? 0);
         const likes = Number(m.likes ?? m.favorites ?? m.reactions ?? 0);
         const comments = Number(m.comments ?? m.replies ?? 0);
         const shares = Number(m.shares ?? m.retweets ?? m.reposts ?? 0);
-        impressions += imp;
         engagements += m.engagement != null ? Number(m.engagement) : likes + comments + shares;
       }
       const names = Object.keys(platforms).join(", ") || "no stats collected yet";

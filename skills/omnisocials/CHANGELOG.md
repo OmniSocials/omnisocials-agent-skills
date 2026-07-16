@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.9.0 (2026-07-16)
+
+### Fixed
+- **Analytics output now shows every metric the platform reported.** `analytics:post` and `posts:recent-platform` used to print a fixed set (impressions, engagements, likes, comments, shares), silently dropping Instagram reach/saves/views, TikTok views, LinkedIn clicks, and any platform `note`. Both commands now render the full per-platform metric set.
+- `analytics:post` / `analytics:posts` impressions totals no longer misreport Instagram: the exposure number now prefers the platform's own `impressions`, falling back to `views` then `reach`, instead of relabeling reach as impressions.
+
+### Changed
+- `posts:recent-platform` docs: LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission) — the API now returns posts published through OmniSocials with their latest collected stats for the `linkedin` platform, and backfills TikTok photo posts the video list omits.
+
 ## 1.8.0 (2026-07-13)
 
 ### Added
