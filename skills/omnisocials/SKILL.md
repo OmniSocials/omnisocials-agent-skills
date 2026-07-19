@@ -1,6 +1,6 @@
 ---
 name: omnisocials
-description: Manage social media across 11 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business). Create posts, stories, reels, upload media, organize folders, view analytics, and configure webhooks via the OmniSocials API.
+description: Manage social media across 11 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), and configure webhooks via the OmniSocials API.
 ---
 
 # OmniSocials Skill
@@ -70,7 +70,11 @@ IMPORTANT: Follow these rules at all times.
 | "Post a thread to Bluesky" | `posts:create --channels <bluesky_id> --bluesky-thread "part 1 || part 2 || part 3"` |
 | "Post a thread to Mastodon" | `posts:create --channels <mastodon_id> --mastodon-thread "part 1 || part 2 || part 3"` |
 | "Tag a location on Instagram" | `locations:search "<place name>"`, then `posts:create ... --location-id <id>` |
+| "Post a reel with music" | `audio:search "<song or artist>"` (no query = trending), then `posts:create ... --type reel --instagram-audio-id <id>` |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
+| "Any new DMs / comments?" | `inbox:list --unread` (add `--platform` / `--type dm\|comment\|mention` to filter) — needs the `inbox:read` scope |
+| "Reply to that message" | `inbox:messages <conversation-id>` to read the thread, then `inbox:reply <conversation-id> --text "..."` — needs `inbox:write` |
+| "Mark that conversation read" | `inbox:read <conversation-id>` — needs `inbox:write` |
 | "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
 | "Delete that post" | Confirm with user, then `posts:delete <id>` |
 | "Publish my draft" | Confirm with user, then `posts:publish <id>` |
@@ -117,7 +121,7 @@ Follow this workflow when creating posts:
 |---|---|
 | `posts:list` | List posts. Flags: `--status draft\|scheduled\|published\|failed`, `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
-| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns captions, format, timestamps, normalized engagement, and every raw metric the platform exposes (Instagram includes reach/views/saves/shares from per-post insights). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25), `--platforms` (comma-separated filter). Requires the `analytics:read` scope. |
+| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25), `--platforms` (comma-separated filter). Requires the `analytics:read` scope. |
 | `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
 | `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create` |
@@ -148,6 +152,12 @@ Follow this workflow when creating posts:
 |---|---|
 | `locations:search "<name>"` | Search Facebook Places for taggable locations (min 2 chars). Returns `location_id` values to pass to `posts:create --location-id` for Instagram place tags. |
 
+### Audio (Instagram Reel music)
+
+| Command | Description |
+|---|---|
+| `audio:search ["<song/artist>"]` | Search Meta's licensed music catalog for Instagram Reels. No query = currently trending audio; `--type original_sound` searches original sounds. Returns `audio_id` values for `posts:create --instagram-audio-id`. Only tracks licensed for third-party publishing appear (selection can differ from the IG app); needs a Facebook account connected whose Page links the Instagram account. |
+
 ### Accounts
 
 | Command | Description |
@@ -164,6 +174,17 @@ Follow this workflow when creating posts:
 | `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
 | `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD` |
+
+### Inbox (Social Inbox)
+
+Read and reply to DMs, comments, and mentions across connected accounts. **Requires the opt-in `inbox:read` / `inbox:write` scopes** — the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
+
+| Command | Description |
+|---|---|
+| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
+| `inbox:messages <conversation-id>` | Full message history for one conversation, oldest→newest, each with direction, timestamp, and read/replied state. Flags: `--limit`, `--cursor`. Requires `inbox:read`. |
+| `inbox:read <conversation-id>` | Mark a conversation's messages as read. Requires `inbox:write`. |
+| `inbox:reply <conversation-id>` | Send a reply. Flags: `--text` (required), `--attachment-url`, `--attachment-type`. Requires `inbox:write`. |
 
 ### Webhooks
 
@@ -232,6 +253,11 @@ All commands support these flags:
 | `--instagram-share-to-feed` | Share reel to feed |
 | `--instagram-cover-url` | Reel cover image URL |
 | `--instagram-thumbnail-type` | Thumbnail type: `from-video` or `from-library` |
+| `--instagram-audio-id` | Licensed music for the reel — an `audio_id` from `audio:search`. **Reels only** (Meta's API can't add music to feed posts/carousels/stories). Needs a Facebook account connected whose Page links this Instagram account. |
+| `--instagram-audio-volume` | Music volume 0–100 (default 100). Only with `--instagram-audio-id` |
+| `--instagram-video-volume` | Video's own audio volume 0–100 (default 100; `0` = music-only reel) |
+| `--instagram-trial-reel` | Publish the reel as a **Trial Reel** — shown to non-followers first to test performance. ONLY use when the user explicitly asks for a Trial Reel. **Reels only.** Not available on every account: Instagram requires roughly 1,000+ followers and enables the feature per account; ineligible accounts fail at publish with a clear error. |
+| `--instagram-trial-graduation-strategy` | How a Trial Reel graduates to all followers: `MANUAL` (default — the user decides in the Instagram app) or `SS_PERFORMANCE` (Instagram shares it automatically if it performs well). Only with `--instagram-trial-reel` |
 
 #### Auto first comment (Instagram, Facebook, LinkedIn, YouTube)
 Posts the given text as the first comment automatically, right after the post publishes. Common for keeping hashtags or a link out of the main caption. One flag per channel, so you can set a different first comment per platform in the same call. Not posted for stories.
@@ -251,7 +277,11 @@ Posts the given text as the first comment automatically, right after the post pu
 | `--tiktok-disable-comment` | Disable comments |
 | `--tiktok-disable-duet` | Disable duets |
 | `--tiktok-disable-stitch` | Disable stitches |
+| `--tiktok-video-cover-timestamp-ms` | Video only. Timestamp (ms) of the frame to use as the cover |
 | `--tiktok-is-aigc` | Mark as AI-generated content |
+| `--tiktok-brand-content-toggle` | Paid partnership promoting a third-party brand |
+| `--tiktok-brand-organic-toggle` | Promoting your own business / brand |
+| `--tiktok-auto-add-music` | Photo carousels only. TikTok auto-selects a soundtrack |
 
 #### X (Twitter)
 | Flag | Description |
@@ -375,6 +405,16 @@ link: https://example.com/shop"
 ### Bulk analytics for many posts (one request)
 ```
 ./scripts/omnisocials.js analytics:posts 1024,1025,1026
+```
+
+### Triage the social inbox and reply
+```
+./scripts/omnisocials.js inbox:list --unread --platform instagram
+# Returns each conversation with its Conversation: <conversation_id>
+
+./scripts/omnisocials.js inbox:messages "<conversation_id>"
+./scripts/omnisocials.js inbox:reply "<conversation_id>" --text "Thanks so much for the kind words!"
+./scripts/omnisocials.js inbox:read "<conversation_id>"
 ```
 
 ### Audit a brand-new workspace's existing content (nothing posted via OmniSocials yet)

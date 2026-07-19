@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.9.0";
+const VERSION = "1.11.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -204,7 +204,15 @@ function assemblePlatformOptions(flags) {
       "instagram-cover-url": "cover_url",
       "instagram-thumbnail-type": "thumbnail_type",
       "instagram-thumb-offset": { key: "thumb_offset", transform: Number },
+      // Licensed music for reels — audio_id from `audio:search`.
+      "instagram-audio-id": "audio_id",
+      "instagram-audio-volume": { key: "audio_volume", transform: (v) => parseInt(v, 10) },
+      "instagram-video-volume": { key: "video_volume", transform: (v) => parseInt(v, 10) },
       "instagram-first-comment": "first_comment",
+      // Trial Reel — shown to non-followers first. Reels only; needs an
+      // eligible account (~1,000+ followers, Meta-gated at publish time).
+      "instagram-trial-reel": { key: "is_trial_reel", transform: (v) => v === true || v === "true" },
+      "instagram-trial-graduation-strategy": "trial_graduation_strategy",
     },
     // Comment-capable platforms whose only CLI option (so far) is the auto
     // first comment. Posted right after publish — handy for keeping hashtags or
@@ -223,8 +231,11 @@ function assemblePlatformOptions(flags) {
       "tiktok-disable-comment": { key: "disable_comment", transform: (v) => v === true || v === "true" },
       "tiktok-disable-duet": { key: "disable_duet", transform: (v) => v === true || v === "true" },
       "tiktok-disable-stitch": { key: "disable_stitch", transform: (v) => v === true || v === "true" },
+      "tiktok-video-cover-timestamp-ms": { key: "video_cover_timestamp_ms", transform: (v) => parseInt(v, 10) },
       "tiktok-is-aigc": { key: "is_aigc", transform: (v) => v === true || v === "true" },
       "tiktok-brand-content-toggle": { key: "brand_content_toggle", transform: (v) => v === true || v === "true" },
+      "tiktok-brand-organic-toggle": { key: "brand_organic_toggle", transform: (v) => v === true || v === "true" },
+      "tiktok-auto-add-music": { key: "auto_add_music", transform: (v) => v === true || v === "true" },
     },
     x: {
       "x-reply-settings": "reply_settings",
@@ -410,6 +421,64 @@ function formatWebhook(webhook, index) {
     lines.push(`    Last triggered: ${webhook.last_triggered_at}`);
   }
   return lines.join("\n");
+}
+
+// --- Social Inbox ---
+
+// Message direction values vary a little by platform ("outbound"/"outgoing"/
+// "sent" all mean the reply was sent from OmniSocials). Treat any of them as
+// "you" so the sender label is right regardless of the platform's wording.
+const OUTBOUND_DIRECTIONS = new Set(["outbound", "outgoing", "sent"]);
+function isOutbound(direction) {
+  return OUTBOUND_DIRECTIONS.has(String(direction || "").toLowerCase());
+}
+
+function formatConversation(convo, index) {
+  const lines = [];
+  const p = convo.participant || {};
+  const name = p.name || p.username || p.id || "Unknown";
+  const handle = p.username && p.username !== name ? ` (@${p.username})` : "";
+  lines.push(`#${index + 1}  ${name}${handle}`);
+  // conversation_id is the key passed to inbox:messages/read/reply. It can
+  // contain ":" and "()" (LinkedIn URNs), so print it whole for copy/paste.
+  lines.push(`    Conversation: ${convo.conversation_id}`);
+  lines.push(`    Platform: ${convo.platform}    Type: ${convo.type}`);
+  if (convo.unread_count) lines.push(`    Unread: ${convo.unread_count}`);
+  const lm = convo.last_message;
+  if (lm) {
+    const who = isOutbound(lm.direction) ? "you" : name;
+    lines.push(
+      `    Last (${who}): "${truncate(lm.text, 60)}"${lm.timestamp ? `  ${lm.timestamp}` : ""}`
+    );
+  }
+  if (convo.post) {
+    const cap = convo.post.caption ? ` "${truncate(convo.post.caption, 40)}"` : "";
+    lines.push(`    On post: ${convo.post.id}${cap}`);
+  }
+  return lines.join("\n");
+}
+
+function formatMessage(msg, index) {
+  const lines = [];
+  const s = msg.sender || {};
+  const who = isOutbound(msg.direction) ? "You" : s.name || s.username || "Them";
+  lines.push(`#${index + 1}  ${who}${msg.timestamp ? `  ${msg.timestamp}` : ""}`);
+  // Print the full message body (indent continuation lines); --json has the raw.
+  lines.push(`    ${msg.text ? msg.text.replace(/\n/g, "\n    ") : "(no text)"}`);
+  const meta = [`id: ${msg.id}`];
+  if (msg.type) meta.push(msg.type);
+  if (msg.is_read === false) meta.push("unread");
+  if (msg.is_replied) meta.push("replied");
+  if (msg.reaction) meta.push(`reaction: ${msg.reaction}`);
+  lines.push(`    ${meta.join("  ·  ")}`);
+  return lines.join("\n");
+}
+
+// Cursor-pagination hint shared by inbox:list and inbox:messages.
+function printPagination(pagination) {
+  if (pagination && pagination.has_more && pagination.next_cursor) {
+    console.log(`\nMore — pass --cursor "${pagination.next_cursor}" for the next page.`);
+  }
 }
 
 function handleResult(result, flags, formatter) {
@@ -612,8 +681,12 @@ async function cmdPostsRecentPlatform(config, flags) {
         : "no metrics from this platform";
       console.log(`${i + 1}. [${p.platform}] ${p.format} — ${metricStr}`);
       console.log(`   ${snippet}`);
+      // id (dedupe key) + permalink for ingestion; --json carries the full,
+      // untruncated caption and exact-integer metrics.
+      if (p.id) console.log(`   id: ${p.id}${p.permalink ? `  ·  ${p.permalink}` : ""}`);
     }
     if (result.note) console.log(`\n${result.note}`);
+    console.log("\nTip: add --json for the full untruncated captions, exact-integer metrics, ids, and permalinks (for storing each post).");
     if (errEntries.length) {
       console.log("\nFetch errors:");
       for (const [p, m] of errEntries) console.log(`  ${p}: ${m}`);
@@ -936,6 +1009,48 @@ async function cmdLocationsSearch(config, flags, positional) {
   });
 }
 
+// --- Audio (Instagram Reel music) ---
+
+async function cmdAudioSearch(config, flags, positional) {
+  const q = flags.q || positional.join(" ");
+  const params = {};
+  if (q && q.trim()) params.q = q.trim();
+  if (flags.type) params.type = flags.type; // music (default) | original_sound
+
+  const result = await apiRequest(config, "GET", "/audio/search", undefined, params);
+  // Unavailable search (e.g. no Facebook account linked to the IG account)
+  // comes back 200 with a plain-string `error` — an expected state, not a
+  // failure, so surface it as a message instead of letting handleResult
+  // treat it as an {code,message} API error.
+  if (result && typeof result.error === "string") {
+    if (flags.json) outputJson(result);
+    else console.log(result.error);
+    return;
+  }
+  handleResult(result, flags, (data) => {
+    const tracks = Array.isArray(data) ? data : [];
+    if (!tracks.length) {
+      console.log(
+        params.q
+          ? `No tracks found for "${params.q}". Only music licensed for third-party publishing appears here.`
+          : "No trending audio available right now."
+      );
+      return;
+    }
+    const fmtDur = (ms) => {
+      if (!ms) return "";
+      const s = Math.round(ms / 1000);
+      return `  ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    };
+    console.log(params.q ? `Audio matching "${params.q}" (${tracks.length})` : `Trending audio (${tracks.length})`);
+    console.log("─".repeat(40));
+    for (const t of tracks) {
+      console.log(`audio_id: ${t.audio_id}  ${t.title || "Untitled"}${t.artist || t.ig_username ? `  — ${t.artist || t.ig_username}` : ""}${fmtDur(t.duration_ms)}`);
+    }
+    console.log("\nPass an id to posts:create with --instagram-audio-id (reels only).");
+  });
+}
+
 // --- Accounts ---
 
 async function cmdAccountsList(config, flags) {
@@ -1193,6 +1308,115 @@ async function cmdAnalyticsBestTimes(config, flags) {
   });
 }
 
+// --- Social Inbox ---
+// The Social Inbox uses OPT-IN scopes: inbox:read lists/reads conversations,
+// inbox:write replies and marks read (enabled via "Social Inbox access" when the
+// API key is created). conversation_id values can contain ":" and "()" (LinkedIn
+// URNs), so every id is encodeURIComponent'd into the request path.
+
+async function cmdInboxList(config, flags) {
+  const result = await apiRequest(config, "GET", "/inbox/conversations", undefined, {
+    platform: flags.platform,
+    type: flags.type,
+    unread: flags.unread,
+    limit: flags.limit,
+    cursor: flags.cursor,
+  });
+
+  handleResult(result, flags, (data) => {
+    const convos = Array.isArray(data) ? data : [];
+    if (!convos.length) {
+      console.log("No conversations found.");
+      return;
+    }
+    console.log(`Conversations (${convos.length})`);
+    console.log("─".repeat(40));
+    console.log(convos.map((c, i) => formatConversation(c, i)).join("\n\n"));
+    printPagination(result.pagination);
+  });
+}
+
+async function cmdInboxMessages(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    console.error("Usage: omnisocials inbox:messages <conversation-id> [--limit --cursor]");
+    process.exit(1);
+  }
+
+  const result = await apiRequest(
+    config,
+    "GET",
+    `/inbox/conversations/${encodeURIComponent(id)}/messages`,
+    undefined,
+    { limit: flags.limit, cursor: flags.cursor }
+  );
+
+  handleResult(result, flags, (data) => {
+    const messages = Array.isArray(data) ? data : [];
+    if (!messages.length) {
+      console.log("No messages in this conversation.");
+      return;
+    }
+    console.log(`Messages (${messages.length})`);
+    console.log("─".repeat(40));
+    console.log(messages.map((m, i) => formatMessage(m, i)).join("\n\n"));
+    printPagination(result.pagination);
+  });
+}
+
+async function cmdInboxMarkRead(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    console.error("Usage: omnisocials inbox:read <conversation-id>");
+    process.exit(1);
+  }
+
+  const result = await apiRequest(
+    config,
+    "POST",
+    `/inbox/conversations/${encodeURIComponent(id)}/read`
+  );
+
+  // Response is a top-level object ({ conversation_id, marked_read }) with no
+  // `data` wrapper — read it straight off `result` in the closure.
+  handleResult(result, flags, () => {
+    const convId = result.conversation_id || id;
+    if (result.marked_read) {
+      console.log(`Conversation ${convId} marked as read.`);
+    } else {
+      console.log(`Conversation ${convId} had no unread messages.`);
+    }
+  });
+}
+
+async function cmdInboxReply(config, flags, positional) {
+  const id = positional[0];
+  const text = flags.text;
+  if (!id || !text) {
+    console.error(
+      'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--attachment-url <url> --attachment-type <type>]'
+    );
+    process.exit(1);
+  }
+
+  const body = { text };
+  if (flags["attachment-url"]) body.attachment_url = flags["attachment-url"];
+  if (flags["attachment-type"]) body.attachment_type = flags["attachment-type"];
+
+  const result = await apiRequest(
+    config,
+    "POST",
+    `/inbox/conversations/${encodeURIComponent(id)}/reply`,
+    body
+  );
+
+  handleResult(result, flags, (data) => {
+    console.log("Reply sent!");
+    if (data && data.id) console.log(`Message ID: ${data.id}`);
+    if (data && data.timestamp) console.log(`Sent: ${data.timestamp}`);
+  });
+}
+
 // --- Webhooks ---
 
 async function cmdWebhooksList(config, flags) {
@@ -1348,6 +1572,9 @@ FOLDERS
 LOCATIONS
   locations:search "<name>"      Find Instagram location_id values for a place
 
+AUDIO
+  audio:search ["<song/artist>"] Instagram Reel music from Meta's licensed catalog; no query = trending [--type music|original_sound]
+
 ACCOUNTS
   accounts:list                  List connected accounts
   accounts:get <id>              Get account details
@@ -1358,6 +1585,12 @@ ANALYTICS
   analytics:overview             Workspace analytics [--period --start-date --end-date]
   analytics:accounts             Account analytics [--platform --date]
   analytics:best-times           Recommended posting slots [--platform (required) --timezone]
+
+INBOX (Social Inbox — needs the opt-in inbox:read / inbox:write scopes)
+  inbox:list                     List conversations [--platform --type dm|comment|mention --unread --limit --cursor]
+  inbox:messages <conv-id>       Full message history for one conversation [--limit --cursor]
+  inbox:read <conv-id>           Mark a conversation's messages as read (inbox:write)
+  inbox:reply <conv-id>          Reply to a conversation [--text (required) --attachment-url --attachment-type] (inbox:write)
 
 WEBHOOKS
   webhooks:list                  List webhooks
@@ -1401,6 +1634,11 @@ PLATFORM FLAGS
   --youtube-first-comment        Auto first comment on the video (video must allow comments)
   --instagram-share-to-feed      Share Instagram reel to feed
   --instagram-cover-url          Instagram reel cover image URL
+  --instagram-audio-id           Licensed music for the reel (from audio:search; reels only)
+  --instagram-audio-volume       Music volume 0-100 (default 100)
+  --instagram-video-volume       Video's own audio volume 0-100 (0 = music-only reel)
+  --instagram-trial-reel         Publish as a Trial Reel: non-followers see it first (reels only; needs ~1,000+ followers, Meta-gated at publish)
+  --instagram-trial-graduation-strategy  Trial Reel graduation: MANUAL (default) or SS_PERFORMANCE (auto-share if it performs well)
   --instagram-first-comment      Auto first comment on the post/reel (great for hashtags; not for stories)
   --facebook-first-comment       Auto first comment on the Facebook Page post (Page posts only)
   --linkedin-first-comment       Auto first comment on the LinkedIn profile post (e.g. link in first comment)
@@ -1419,6 +1657,8 @@ EXAMPLES
   omnisocials posts:create --text "Thread time" --channels x --x-thread "First tweet || Second tweet || Third"
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
   omnisocials locations:search "Blue Bottle Coffee"
+  omnisocials inbox:list --platform instagram --unread
+  omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!"
   omnisocials posts:list --status scheduled --json
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
 
@@ -1446,6 +1686,7 @@ const COMMANDS = {
   "folders:list": { handler: cmdFoldersList },
   "folders:create": { handler: cmdFoldersCreate },
   "locations:search": { handler: cmdLocationsSearch },
+  "audio:search": { handler: cmdAudioSearch },
   "accounts:list": { handler: cmdAccountsList },
   "accounts:get": { handler: cmdAccountsGet },
   "analytics:post": { handler: cmdAnalyticsPost },
@@ -1453,6 +1694,10 @@ const COMMANDS = {
   "analytics:overview": { handler: cmdAnalyticsOverview },
   "analytics:accounts": { handler: cmdAnalyticsAccounts },
   "analytics:best-times": { handler: cmdAnalyticsBestTimes },
+  "inbox:list": { handler: cmdInboxList },
+  "inbox:messages": { handler: cmdInboxMessages },
+  "inbox:read": { handler: cmdInboxMarkRead },
+  "inbox:reply": { handler: cmdInboxReply },
   "webhooks:list": { handler: cmdWebhooksList },
   "webhooks:create": { handler: cmdWebhooksCreate },
   "webhooks:get": { handler: cmdWebhooksGet },

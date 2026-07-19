@@ -43,6 +43,7 @@ describe("CLI basics", () => {
     expect(stdout).toContain("MEDIA");
     expect(stdout).toContain("ACCOUNTS");
     expect(stdout).toContain("ANALYTICS");
+    expect(stdout).toContain("INBOX");
     expect(stdout).toContain("WEBHOOKS");
   });
 
@@ -109,6 +110,64 @@ describe("CLI basics", () => {
   it("webhooks:create requires --url and --events", async () => {
     const { stderr, exitCode } = await run([
       "webhooks:create",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+});
+
+describe("Inbox commands", () => {
+  it("inbox:list is a known command (requires an API key)", async () => {
+    const { stderr, exitCode } = await run(["inbox:list"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("API key not found");
+    expect(stderr).not.toContain("Unknown command");
+  });
+
+  it("inbox:messages requires a conversation id", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:messages",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("inbox:read requires a conversation id", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:read",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("inbox:reply requires a conversation id and --text", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:reply",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("inbox:reply with an id still requires --text", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:reply",
+      "linkedin_comment_urn:li:activity:123",
       "--api-key",
       "omsk_test_fake",
       "--base-url",

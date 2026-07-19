@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.11.0 (2026-07-19)
+
+### Added
+- **Social Inbox.** Read and reply to DMs, comments, and mentions from the CLI. Four new commands: `inbox:list` (list conversations, filter with `--platform instagram|facebook|linkedin`, `--type dm|comment|mention`, `--unread`, and cursor-paginate with `--limit`/`--cursor`), `inbox:messages <conversation-id>` (full message history for one conversation), `inbox:read <conversation-id>` (mark a conversation's messages as read), and `inbox:reply <conversation-id> --text "..."` (reply, with optional `--attachment-url`/`--attachment-type`). Conversation ids that contain `:` and `()` (LinkedIn URNs) are URL-encoded automatically, so paste them straight from `inbox:list`. Requires the **opt-in** `inbox:read` / `inbox:write` scopes — enable "Social Inbox access" when creating the API key.
+
+## 1.10.0
+
+### Added
+- **`posts:recent-platform` now returns a `permalink` and the platform's native post `id` per post**, so an agent can store and de-duplicate natively-published posts. `--json` output carries the full untruncated caption and exact-integer metrics (the human table still truncates captions and shows only a snippet). The human view now also prints each post's `id` and permalink.
+
 ## 1.9.0 (2026-07-16)
 
 ### Fixed
