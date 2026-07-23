@@ -1,12 +1,13 @@
 {
   "name": "omnisocials-skills",
   "version": "1.2.0",
+  "description": "OmniSocials plugins for managing social media across 11 platforms from your IDE or terminal.",
   "owner": { "name": "OmniSocials" },
   "plugins": [
     {
       "name": "omnisocials",
       "description": "Manage social media across 11 platforms — create posts, stories, reels, threads, upload media, organize folders, view analytics, and configure webhooks.",
-      "source": "https://github.com/OmniSocials/omnisocials-agent-skills"
+      "source": "./"
     }
   ]
 }
