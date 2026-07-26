@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.12.0 (2026-07-27)
+
+### Docs
+- **Per-media alt text.** Documented the API's media entry objects: any `media_urls` entry can be `{ "url": "...", "alt": "..." }` and any `media_ids` entry `{ "id": "...", "alt": "..." }` (max 1500 chars, thread-part media included) to attach an accessibility description. Delivered to Mastodon (media description), Bluesky (embed alt), X (photos/GIFs, clamped to 1000) and Pinterest (`pinterest.alt_text` fallback). The `--media-urls`/`--media-ids` flags still take bare values — call the API directly for alt entries.
+
+### Added
+- **Hashtag sets.** Save reusable, named groups of hashtags per workspace and apply one to a new post in a single call. Four new commands: `hashtag-sets:list`, `hashtag-sets:create --name "Brand" --tags "#a #b #c"` (`#` optional, deduped case-insensitively, max 100 tags), `hashtag-sets:update <id>` (`--tags` replaces the full list), and `hashtag-sets:delete <id>`. Apply a set at create time with `posts:create --hashtag-set "<name>"` — tags merge into the captions once (existing posts never change when a set is edited), tags already present in a caption are skipped, and Instagram's 30-hashtag cap fails fast with `hashtag_limit_exceeded`. Add `--hashtag-placement first_comment` to post the tags as the automatic first comment on comment-capable channels, and `--hashtag-platforms instagram,tiktok` to target a subset of the post's channels.
+
 ## 1.11.1 (2026-07-26)
 
 ### Docs

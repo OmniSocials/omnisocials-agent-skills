@@ -279,6 +279,11 @@ function buildPostBody(flags) {
   if (flags["link-description"]) body.link_description = flags["link-description"];
   if (flags["link-thumbnail-url"]) body.link_thumbnail_url = flags["link-thumbnail-url"];
 
+  // Hashtag sets — top-level; expanded server-side once at create time.
+  if (flags["hashtag-set"]) body.hashtag_set = flags["hashtag-set"];
+  if (flags["hashtag-placement"]) body.hashtag_placement = flags["hashtag-placement"];
+  if (flags["hashtag-platforms"]) body.hashtag_platforms = splitComma(flags["hashtag-platforms"]);
+
   // Instagram extras — top-level (not nested under `instagram`).
   if (flags["location-id"]) body.location_id = flags["location-id"];
   if (flags.collaborators) body.collaborators = splitComma(flags.collaborators);
@@ -984,6 +989,80 @@ async function cmdFoldersCreate(config, flags) {
   });
 }
 
+// --- Hashtag sets ---
+
+async function cmdHashtagSetsList(config, flags) {
+  const result = await apiRequest(config, "GET", "/hashtag-sets");
+  handleResult(result, flags, (data) => {
+    const sets = Array.isArray(data) ? data : [];
+    if (!sets.length) {
+      console.log("No hashtag sets found. Create one with hashtag-sets:create.");
+      return;
+    }
+    console.log(`Hashtag sets (${sets.length})`);
+    console.log("─".repeat(40));
+    for (const s of sets) {
+      console.log(`ID: ${s.id}  ${s.name}  (${s.hashtag_count} tags)`);
+      console.log(`  ${s.preview}`);
+    }
+  });
+}
+
+async function cmdHashtagSetsCreate(config, flags) {
+  const name = flags.name;
+  const tags = flags.tags;
+  if (!name || !tags) {
+    exitWithError(
+      'Usage: omnisocials hashtag-sets:create --name "Fitness Brand" --tags "#fitness #gym #workout"'
+    );
+  }
+
+  const result = await apiRequest(config, "POST", "/hashtag-sets", {
+    name,
+    hashtags: tags,
+  });
+  handleResult(result, flags, (d) => {
+    console.log("Hashtag set created successfully!");
+    console.log(`ID: ${d.id}`);
+    console.log(`Name: ${d.name}`);
+    console.log(`Tags (${d.hashtag_count}): ${d.preview}`);
+    console.log(`Apply it with: posts:create --hashtag-set "${d.name}"`);
+  });
+}
+
+async function cmdHashtagSetsUpdate(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id || (!flags.name && !flags.tags)) {
+    exitWithError(
+      'Usage: omnisocials hashtag-sets:update <id> [--name "New Name"] [--tags "#full #replacement #list"]'
+    );
+  }
+
+  const body = {};
+  if (flags.name) body.name = flags.name;
+  if (flags.tags) body.hashtags = flags.tags;
+
+  const result = await apiRequest(config, "PATCH", `/hashtag-sets/${id}`, body);
+  handleResult(result, flags, (d) => {
+    console.log("Hashtag set updated!");
+    console.log(`ID: ${d.id}`);
+    console.log(`Name: ${d.name}`);
+    console.log(`Tags (${d.hashtag_count}): ${d.preview}`);
+  });
+}
+
+async function cmdHashtagSetsDelete(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id) {
+    exitWithError("Usage: omnisocials hashtag-sets:delete <id>");
+  }
+
+  const result = await apiRequest(config, "DELETE", `/hashtag-sets/${id}`);
+  handleResult(result, flags, () => {
+    console.log("Hashtag set deleted. Posts that already used it keep their hashtags.");
+  });
+}
+
 // --- Locations (Instagram place tagging) ---
 
 async function cmdLocationsSearch(config, flags, positional) {
@@ -1569,6 +1648,12 @@ FOLDERS
   folders:list                   List media folders
   folders:create                 Create a folder [--name --parent-id]
 
+HASHTAG SETS
+  hashtag-sets:list              List saved hashtag sets (id, name, tags)
+  hashtag-sets:create            Save a reusable set [--name --tags "#a #b #c"]
+  hashtag-sets:update <id>       Rename / replace tags [--name --tags] (--tags replaces the FULL list)
+  hashtag-sets:delete <id>       Delete a set (existing posts keep their tags)
+
 LOCATIONS
   locations:search "<name>"      Find Instagram location_id values for a place
 
@@ -1613,6 +1698,9 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --media-urls <url,url>         Attach media by URL
   --media-ids <id,id>            Attach media from the library
   --link-url <url>               Link preview (LinkedIn/Facebook); --link-title --link-description --link-thumbnail-url
+  --hashtag-set <name>           Apply a saved hashtag set by name (see hashtag-sets:list)
+  --hashtag-placement <mode>     caption_append (default) or first_comment
+  --hashtag-platforms <a,b>      Only apply the set to these channels
   --location-id <id>             Instagram place tag (from locations:search)
   --collaborators <a,b>          Instagram co-author usernames (max 3)
   --user-tags '<json>'           Instagram photo tags, JSON array [{"username","x","y","image_index?"}]
@@ -1687,6 +1775,10 @@ const COMMANDS = {
   "media:delete": { handler: cmdMediaDelete },
   "folders:list": { handler: cmdFoldersList },
   "folders:create": { handler: cmdFoldersCreate },
+  "hashtag-sets:list": { handler: cmdHashtagSetsList },
+  "hashtag-sets:create": { handler: cmdHashtagSetsCreate },
+  "hashtag-sets:update": { handler: cmdHashtagSetsUpdate },
+  "hashtag-sets:delete": { handler: cmdHashtagSetsDelete },
   "locations:search": { handler: cmdLocationsSearch },
   "audio:search": { handler: cmdAudioSearch },
   "accounts:list": { handler: cmdAccountsList },

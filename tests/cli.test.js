@@ -118,6 +118,50 @@ describe("CLI basics", () => {
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Usage:");
   });
+
+  it("help lists the hashtag set commands", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("HASHTAG SETS");
+    expect(stdout).toContain("hashtag-sets:create");
+    expect(stdout).toContain("--hashtag-set <name>");
+  });
+
+  it("hashtag-sets:create requires --name and --tags", async () => {
+    const { stderr, exitCode } = await run([
+      "hashtag-sets:create",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("hashtag-sets:update requires an id and a field", async () => {
+    const { stderr, exitCode } = await run([
+      "hashtag-sets:update",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("hashtag-sets:delete requires an id", async () => {
+    const { stderr, exitCode } = await run([
+      "hashtag-sets:delete",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
 });
 
 describe("Inbox commands", () => {

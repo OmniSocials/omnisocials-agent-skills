@@ -56,6 +56,7 @@ Ask your AI agent things like:
 - **Posts, Stories, and Reels** with platform-specific options
 - **Platform-specific controls**: Pinterest boards, YouTube metadata, TikTok privacy, Instagram covers, X reply settings
 - **Per-platform media**: Different images/videos for different platforms in the same post
+- **Alt text**: Per-media accessibility descriptions, delivered to Mastodon, Bluesky, X, and Pinterest
 - **Analytics**: Post-level, workspace overview, and account-level metrics
 - **Webhooks**: Get notified when posts are scheduled, published, or fail
 - **Zero dependencies**: Uses Node.js 18+ built-in fetch

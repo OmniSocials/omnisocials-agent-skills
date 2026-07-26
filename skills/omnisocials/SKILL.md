@@ -76,6 +76,8 @@ IMPORTANT: Follow these rules at all times.
 | "Reply to that message" | `inbox:messages <conversation-id>` to read the thread, then `inbox:reply <conversation-id> --text "..."` — needs `inbox:write` |
 | "Mark that conversation read" | `inbox:read <conversation-id>` — needs `inbox:write` |
 | "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
+| "Add my usual hashtags" | `hashtag-sets:list` to find the set, then `posts:create ... --hashtag-set "<name>"` (add `--hashtag-placement first_comment` to keep tags out of the caption) |
+| "Save these hashtags for reuse" | `hashtag-sets:create --name "Brand" --tags "#a #b #c"` |
 | "Delete that post" | Confirm with user, then `posts:delete <id>` |
 | "Publish my draft" | Confirm with user, then `posts:publish <id>` |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
@@ -145,6 +147,17 @@ Follow this workflow when creating posts:
 |---|---|
 | `folders:list` | List media folders (id, name, parent, item count). Use folder ids with `media:upload-base64 --folder-id`. |
 | `folders:create` | Create a folder. Flags: `--name` (required), `--parent-id` (nest under another folder) |
+
+### Hashtag sets
+
+Saved, reusable groups of hashtags per workspace. Apply one at post-create time with `posts:create --hashtag-set "<name>"` — the tags are merged into the captions ONCE (the post stores plain text; editing the set later never changes existing posts). Tags already present in a caption are skipped, and Instagram's 30-hashtag cap fails fast with `hashtag_limit_exceeded`. Add `--hashtag-placement first_comment` to post the tags as the automatic first comment on Instagram / Facebook / LinkedIn / LinkedIn Page / YouTube instead (other channels fall back to the caption), and `--hashtag-platforms instagram,tiktok` to only tag a subset of the post's channels.
+
+| Command | Description |
+|---|---|
+| `hashtag-sets:list` | List saved sets (id, name, tag count, preview). |
+| `hashtag-sets:create` | Save a set. Flags: `--name` (required, unique per workspace), `--tags` (required, e.g. `"#fitness #gym workout"` — `#` optional, deduped case-insensitively, max 100) |
+| `hashtag-sets:update <id>` | Rename and/or replace tags. `--tags` replaces the FULL list — pass the complete new list. |
+| `hashtag-sets:delete <id>` | Delete a set. Posts that already used it keep their hashtags. |
 
 ### Locations
 
@@ -320,6 +333,8 @@ Media can be the same across all platforms or different per platform:
 The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram": ["url2"], "pinterest": ["url3"] }`. The `default` key is the fallback for platforms without their own key. Pass an empty array to opt a platform out of media.
 
 **PDF by URL:** a PDF passed via `--media-urls` (or `media_urls` in the API) is rasterized into one image slide per page (max 20, in order) — on LinkedIn it publishes as a swipeable document, elsewhere as an image carousel. Same behaviour as uploading the PDF via `media:upload`.
+
+**Alt text (accessibility descriptions):** any `media_urls` entry can be an object `{ "url": "...", "alt": "..." }` (and any `media_ids` entry `{ "id": "...", "alt": "..." }`, including thread-part media) instead of a bare string — max 1500 chars. Delivered to Mastodon (media description — the Mastodon community strongly values alt text), Bluesky (embed alt), X (photos/GIFs only, clamped to 1000) and Pinterest (fallback for `pinterest.alt_text`); other platforms ignore it. The `--media-urls` flag takes bare URLs only, so call the API directly for alt entries, e.g. a Mastodon post: `{"content": {"default": "Morning ride 🐘"}, "accounts": ["<mastodon_id>"], "media_urls": [{"url": "https://example.com/bike.jpg", "alt": "A red bicycle leaning against a brick wall"}]}`. `posts:get --json` reads alt back on each media item.
 
 ## Examples
 
