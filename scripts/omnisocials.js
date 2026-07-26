@@ -1633,7 +1633,9 @@ PLATFORM FLAGS
   --youtube-made-for-kids        YouTube made for kids flag
   --youtube-first-comment        Auto first comment on the video (video must allow comments)
   --instagram-share-to-feed      Share Instagram reel to feed
-  --instagram-cover-url          Instagram reel cover image URL
+  --instagram-cover-url          Instagram reel cover image URL (with --instagram-thumbnail-type from-library)
+  --instagram-thumbnail-type     Reel cover source: from-video (frame at --instagram-thumb-offset) or from-library (image at --instagram-cover-url)
+  --instagram-thumb-offset       Reel cover frame timestamp in MILLISECONDS from video start (3000 = 0:03)
   --instagram-audio-id           Licensed music for the reel (from audio:search; reels only)
   --instagram-audio-volume       Music volume 0-100 (default 100)
   --instagram-video-volume       Video's own audio volume 0-100 (0 = music-only reel)

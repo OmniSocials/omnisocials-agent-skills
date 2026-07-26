@@ -251,8 +251,9 @@ All commands support these flags:
 | Flag | Description |
 |---|---|
 | `--instagram-share-to-feed` | Share reel to feed |
-| `--instagram-cover-url` | Reel cover image URL |
+| `--instagram-cover-url` | Reel cover image URL (with `--instagram-thumbnail-type from-library`) |
 | `--instagram-thumbnail-type` | Thumbnail type: `from-video` or `from-library` |
+| `--instagram-thumb-offset` | Reel cover frame timestamp in **milliseconds** from the video start (e.g. `3000` = 0:03; with `--instagram-thumbnail-type from-video`). `posts:get` reads it back |
 | `--instagram-audio-id` | Licensed music for the reel — an `audio_id` from `audio:search`. **Reels only** (Meta's API can't add music to feed posts/carousels/stories). Needs a Facebook account connected whose Page links this Instagram account. |
 | `--instagram-audio-volume` | Music volume 0–100 (default 100). Only with `--instagram-audio-id` |
 | `--instagram-video-volume` | Video's own audio volume 0–100 (default 100; `0` = music-only reel) |

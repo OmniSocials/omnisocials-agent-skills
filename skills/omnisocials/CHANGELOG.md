@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.11.1 (2026-07-26)
+
+### Docs
+- Documented the two Instagram Reel cover flags that already worked but were missing from the CLI help text and the SKILL.md flag table: `--instagram-thumbnail-type` (`from-video` / `from-library`) and `--instagram-thumb-offset` — the cover frame timestamp in **milliseconds** from the video start (`3000` = 0:03). `posts:get` reads the chosen cover back. No functional changes.
+
 ## 1.11.0 (2026-07-19)
 
 ### Added
