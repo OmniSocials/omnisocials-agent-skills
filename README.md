@@ -44,7 +44,7 @@ Ask your AI agent things like:
 | Category | Commands |
 |----------|----------|
 | **Setup** | `setup`, `config:show` |
-| **Posts** | `posts:list`, `posts:get`, `posts:create`, `posts:create-and-publish`, `posts:update`, `posts:publish`, `posts:delete` |
+| **Posts** | `posts:list`, `posts:get`, `posts:create`, `posts:create-and-publish`, `posts:update`, `posts:publish`, `posts:retry`, `posts:delete` |
 | **Media** | `media:list`, `media:upload`, `media:delete` |
 | **Accounts** | `accounts:list`, `accounts:get` |
 | **Analytics** | `analytics:post`, `analytics:overview`, `analytics:accounts` |

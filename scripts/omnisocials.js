@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.11.0";
+const VERSION = "1.12.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -384,6 +384,11 @@ function formatPost(post, index) {
   if (post.published_urls && Object.keys(post.published_urls).length) {
     lines.push(`    Published: ${Object.values(post.published_urls).join(", ")}`);
   }
+  // Retry lineage: retry_of = the failed post this one retries; retries = retry
+  // posts created from this one. A "published" post with empty published_urls
+  // and retries set is a resolved failure; the live URLs are on the retry post.
+  if (post.retry_of) lines.push(`    Retry of: ${post.retry_of}`);
+  if (post.retries?.length) lines.push(`    Retries: ${post.retries.join(", ")}`);
   if (post.app_url) lines.push(`    Open in OmniSocials: ${post.app_url}`);
   lines.push(`    Created: ${post.created_at}`);
   return lines.join("\n");
@@ -774,6 +779,34 @@ async function cmdPostsPublish(config, flags, positional) {
     console.log(`Post queued for publishing!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
+  });
+}
+
+async function cmdPostsRetry(config, flags, positional) {
+  // Retries ONLY the failed platforms of a post whose status is `failed` or
+  // `warning` (partially failed), on the same post; platforms that already
+  // succeeded are never re-published. Asynchronous: a success response means
+  // the retry is queued, so poll posts:get for the outcome. Max 3 retries per
+  // platform; after that the API returns 400 max_retries_reached and the post
+  // must be recreated.
+  const id = positional[0];
+  if (!id) {
+    console.error("Usage: omnisocials posts:retry <id>");
+    process.exit(1);
+  }
+
+  const result = await apiRequest(config, "POST", `/posts/${id}/retry`);
+
+  handleResult(result, flags, (data) => {
+    console.log(`Retry queued!`);
+    console.log(`ID: ${data.id}`);
+    console.log(`Status: ${data.status}`);
+    if (data.platforms?.length) {
+      console.log(`Retrying: ${data.platforms.join(", ")}`);
+    }
+    console.log(
+      "Platforms that already succeeded are never re-published; poll posts:get for the outcome."
+    );
   });
 }
 
@@ -1633,7 +1666,8 @@ POSTS
   posts:create                   Create a post [--text --channels --schedule --type --media-urls --media-ids]
   posts:create-and-publish       Create and publish immediately
   posts:update <id>              Update a draft/scheduled post
-  posts:publish <id>             Publish a post now
+  posts:publish <id>             Publish a post now (refuses failed posts; use posts:retry)
+  posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
   posts:delete <id>              Delete a post
 
 MEDIA
@@ -1767,6 +1801,7 @@ const COMMANDS = {
   "posts:create-and-publish": { handler: cmdPostsCreateAndPublish },
   "posts:update": { handler: cmdPostsUpdate },
   "posts:publish": { handler: cmdPostsPublish },
+  "posts:retry": { handler: cmdPostsRetry },
   "posts:delete": { handler: cmdPostsDelete },
   "media:list": { handler: cmdMediaList },
   "media:upload": { handler: cmdMediaUpload },

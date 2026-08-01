@@ -95,6 +95,24 @@ describe("CLI basics", () => {
     expect(stderr).toContain("Usage:");
   });
 
+  it("help lists posts:retry", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("posts:retry <id>");
+  });
+
+  it("posts:retry requires an id", async () => {
+    const { stderr, exitCode } = await run([
+      "posts:retry",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
   it("media:upload requires --url", async () => {
     const { stderr, exitCode } = await run([
       "media:upload",
