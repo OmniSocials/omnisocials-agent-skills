@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.13.0 (2026-08-02)
+
+### Docs
+- **Alt text now also delivered to Instagram and LinkedIn.** Per-media `alt` additionally publishes to Instagram (`alt_text` on image posts and carousel image slides; Reels and Stories not supported by Instagram; clamped to Instagram's 1000-char cap) and LinkedIn (`altText` on images only, single and multi-image; video and documents not supported by LinkedIn) — on top of the existing Mastodon/Bluesky/X/Pinterest delivery. Same entry shapes as before; no CLI changes needed.
+
+### Added
+- **`posts:recent-platform` records now include `duration_seconds`** (integer, nullable): the video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and for platforms that don't expose a duration (Instagram's media API has no duration field). The human table shows it as `m:ss` next to the format (e.g. `video (1:35)`); `--json` carries the raw integer.
+
 ## 1.12.0 (2026-07-27)
 
 ### Docs

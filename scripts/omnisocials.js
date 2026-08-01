@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.12.0";
+const VERSION = "1.13.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -689,7 +689,14 @@ async function cmdPostsRecentPlatform(config, flags) {
       const metricStr = hasMetrics
         ? `${p.engagement} engagements${detail ? ` — ${detail}` : ""}`
         : "no metrics from this platform";
-      console.log(`${i + 1}. [${p.platform}] ${p.format} — ${metricStr}`);
+      // Video length in m:ss (95 → "1:35"), where the platform reports it
+      // (currently TikTok and YouTube); null/absent for images and platforms
+      // that don't expose a duration.
+      const duration =
+        typeof p.duration_seconds === "number"
+          ? ` (${Math.floor(p.duration_seconds / 60)}:${String(p.duration_seconds % 60).padStart(2, "0")})`
+          : "";
+      console.log(`${i + 1}. [${p.platform}] ${p.format}${duration} — ${metricStr}`);
       console.log(`   ${snippet}`);
       // id (dedupe key) + permalink for ingestion; --json carries the full,
       // untruncated caption and exact-integer metrics.
