@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.13.0";
+const VERSION = "1.14.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -334,6 +334,27 @@ function buildPostBody(flags) {
     if (parts.length)
       body.mastodon = { ...(body.mastodon || {}), thread_parts: parts };
   }
+
+  // Google Business extras. The CTA button is the ONLY way to put a link or
+  // phone number on a GBP post — captions reject both. Simple CTA + topic
+  // type get their own flags; the JSON-heavy EVENT/OFFER shapes go through
+  // --google-business-json (merged last so it can carry the full object).
+  const gb = {};
+  if (flags["google-business-topic-type"]) gb.topic_type = flags["google-business-topic-type"];
+  if (flags["google-business-cta-action"]) {
+    gb.cta = { actionType: flags["google-business-cta-action"] };
+    if (flags["google-business-cta-url"]) gb.cta.url = flags["google-business-cta-url"];
+  }
+  if (flags["google-business-json"] !== undefined) {
+    try {
+      Object.assign(gb, JSON.parse(flags["google-business-json"]));
+    } catch {
+      exitWithError(
+        '--google-business-json must be a JSON object, e.g. \'{"topic_type":"EVENT","event":{"title":"...","schedule":{...}}}\''
+      );
+    }
+  }
+  if (Object.keys(gb).length > 0) body.google_business = gb;
 
   // Merge per-platform option objects (pinterest/youtube/instagram/tiktok/x),
   // preserving any keys already set above (e.g. x.thread_parts).
@@ -1780,12 +1801,17 @@ PLATFORM FLAGS
   --tiktok-disable-stitch        Disable TikTok stitches
   --tiktok-is-aigc               Mark as AI-generated content
   --x-reply-settings             X reply settings (following/mentionedUsers)
+  --google-business-cta-action   GBP CTA button: LEARN_MORE, BOOK, ORDER, SHOP, SIGN_UP, CALL (GBP captions reject links/phone numbers — the button is the only way)
+  --google-business-cta-url      CTA target URL, http(s):// (required for every action except CALL)
+  --google-business-topic-type   GBP post type: STANDARD (default), EVENT, OFFER
+  --google-business-json         Full google_business JSON for EVENT/OFFER shapes
 
 EXAMPLES
   omnisocials accounts:list
   omnisocials posts:create --text "Hello world!" --channels instagram,linkedin,linkedin_page
   omnisocials posts:create --text "New video!" --channels youtube --type reel --media-urls "https://example.com/video.mp4" --youtube-title "My Video" --youtube-privacy public
   omnisocials posts:create --text "Thread time" --channels x --x-thread "First tweet || Second tweet || Third"
+  omnisocials posts:create --text "Spring sale, 20% off until Sunday" --channels google_business --google-business-cta-action LEARN_MORE --google-business-cta-url "https://example.com/sale"
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
   omnisocials locations:search "Blue Bottle Coffee"
   omnisocials inbox:list --platform instagram --unread

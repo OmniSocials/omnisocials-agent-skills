@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.14.0 (2026-08-02)
+
+### Added
+- **Google Business Profile options.** New flags on `posts:create`, `posts:create-and-publish`, and `posts:update`: `--google-business-cta-action` (`LEARN_MORE`, `BOOK`, `ORDER`, `SHOP`, `SIGN_UP`, `CALL`) + `--google-business-cta-url` attach the CTA button — the only way to put a link or phone number on a GBP post, since GBP captions reject both; `--google-business-topic-type` picks `STANDARD`/`EVENT`/`OFFER`; and `--google-business-json` takes the full `google_business` object for the JSON-heavy EVENT/OFFER shapes. On update the stored object is replaced wholesale, so send the full shape.
+
 ## 1.13.0 (2026-08-02)
 
 ### Docs

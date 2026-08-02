@@ -299,6 +299,16 @@ Posts the given text as the first comment automatically, right after the post pu
 | `--tiktok-brand-organic-toggle` | Promoting your own business / brand |
 | `--tiktok-auto-add-music` | Photo carousels only. TikTok auto-selects a soundtrack |
 
+#### Google Business Profile
+| Flag | Description |
+|---|---|
+| `--google-business-cta-action` | CTA button under the post: `LEARN_MORE`, `BOOK`, `ORDER`, `SHOP`, `SIGN_UP`, `CALL`. **GBP captions reject inline links and phone numbers** — the CTA button is the ONLY way to attach either, so when the user wants a link on a Google Business post, use this |
+| `--google-business-cta-url` | CTA target URL, `http(s)://`. Required for every action except `CALL` (which uses the location's phone number from the business profile) |
+| `--google-business-topic-type` | Post type: `STANDARD` (default), `EVENT`, `OFFER` |
+| `--google-business-json` | Full `google_business` JSON object for the EVENT/OFFER shapes (`event.title` + `event.schedule` with Google's split `{year,month,day}`/`{hours,minutes}` dates; `offer.couponCode`/`redeemOnlineUrl`/`termsConditions`). Merged over the other `--google-business-*` flags |
+
+All four also work on `posts:update <id>` to add or change the CTA on a draft/scheduled post (the stored `google_business` object is replaced wholesale, so send the full shape).
+
 #### X (Twitter)
 | Flag | Description |
 |---|---|
