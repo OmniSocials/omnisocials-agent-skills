@@ -188,7 +188,7 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 | `analytics:best-times` | Recommended posting slots (day + hour) for one platform, computed from the workspace's own posting history (recency-weighted, outlier-damped, in the account's timezone). Top 3 slots + per-day scores. Under 15 analyzed posts it returns clearly-labeled industry defaults with `posts_needed` — tell the user that. Use before scheduling when no time was specified. Flags: `--platform` (required), `--timezone` (IANA override). Requires `analytics:read`. |
 | `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
-| `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD` |
+| `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD`. **Metric scope varies by platform — read each row's `note`.** LinkedIn (profile + page) `impressions` are LIFETIME totals across ALL of the account's content (including posts published outside OmniSocials) as of the snapshot date — never compare them to a windowed export like LinkedIn's native 90-day analytics; diff two snapshot dates to measure a window. Some platforms (e.g. Instagram) report no account-level impressions at all. |
 
 ### Inbox (Social Inbox)
 

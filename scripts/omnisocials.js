@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.14.0";
+const VERSION = "1.15.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1274,6 +1274,72 @@ function metricRows(m) {
   return rows;
 }
 
+// Engagement/impressions normalizers — vendored from the web app's
+// shared/analytics-metrics module (the single source of truth used by the
+// dashboard, public API, and both MCP servers). Keep in sync when the rules
+// change there. The old inline likes+comments+shares sum dropped LinkedIn
+// link clicks and X quotes/bookmarks, so this CLI reported different
+// engagement totals than the app for the same post.
+function numOr0(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function getEngagement(platform, metrics) {
+  const m = metrics || {};
+  // Trust a precomputed engagement count when a fetcher supplied one; a
+  // stored 0 means "not computed" for the platforms that don't set it.
+  const pre = numOr0(m.engagement);
+  if (pre > 0) return pre;
+  const sum = (...keys) => keys.reduce((t, k) => t + numOr0(m[k]), 0);
+  switch (platform) {
+    case "facebook":
+      return (numOr0(m.total_reactions) || numOr0(m.likes)) + numOr0(m.comments) + numOr0(m.shares);
+    case "linkedin":
+    case "linkedin_page":
+      // LinkedIn's native engagement includes link clicks.
+      return sum("likes", "comments", "shares", "clicks");
+    case "youtube":
+    case "reddit":
+    case "tiktok":
+      return sum("likes", "comments", "shares");
+    case "x":
+      return sum("likes", "comments", "reposts", "quotes", "bookmarks");
+    case "threads":
+      return numOr0(m.likes) + (numOr0(m.comments) || numOr0(m.replies)) + numOr0(m.reposts) + numOr0(m.quotes);
+    case "bluesky":
+      return sum("likes", "comments", "reposts", "quotes");
+    case "mastodon":
+      return sum("likes", "comments", "reposts");
+    case "instagram":
+      return sum("likes", "comments", "saves", "shares");
+    case "pinterest":
+      return sum("saves", "pin_clicks", "outbound_clicks");
+    case "google_business":
+      return pre;
+    default:
+      return sum("likes", "comments", "replies", "shares", "reposts", "quotes", "saves");
+  }
+}
+
+function getImpressions(platform, metrics) {
+  const m = metrics || {};
+  switch (platform) {
+    case "instagram":
+      return numOr0(m.views) || numOr0(m.impressions) || numOr0(m.reach);
+    case "facebook":
+      return numOr0(m.reach) || numOr0(m.impressions) || numOr0(m.video_views) || numOr0(m.views);
+    case "linkedin":
+    case "linkedin_page":
+    case "pinterest":
+    case "google_business":
+      return numOr0(m.impressions) || numOr0(m.views) || numOr0(m.reach);
+    default:
+      return numOr0(m.views) || numOr0(m.impressions) || numOr0(m.reach);
+  }
+}
+
 async function cmdAnalyticsPost(config, flags, positional) {
   const id = positional[0];
   if (!id) {
@@ -1307,13 +1373,11 @@ async function cmdAnalyticsPost(config, flags, positional) {
     const perPlatform = [];
     for (const [platform, entry] of entries) {
       const m = (entry && entry.metrics) || {};
-      // Broadest exposure count present, regardless of the platform's name for
-      // it (LinkedIn: impressions, TikTok/X/YouTube: views, IG: reach).
-      const impressions = Number(m.impressions ?? m.views ?? m.reach ?? 0);
+      const impressions = getImpressions(platform, m);
       const likes = Number(m.likes ?? m.favorites ?? m.reactions ?? 0);
       const comments = Number(m.comments ?? m.replies ?? 0);
       const shares = Number(m.shares ?? m.retweets ?? m.reposts ?? 0);
-      const engagements = m.engagement != null ? Number(m.engagement) : likes + comments + shares;
+      const engagements = getEngagement(platform, m);
       totals.impressions += impressions;
       totals.engagements += engagements;
       totals.likes += likes;
@@ -1367,14 +1431,10 @@ async function cmdAnalyticsPosts(config, flags, positional) {
       const platforms = entry.platforms || {};
       let impressions = 0;
       let engagements = 0;
-      for (const [, p] of Object.entries(platforms)) {
+      for (const [name, p] of Object.entries(platforms)) {
         const m = (p && p.metrics) || {};
-        // Broadest exposure count present (impressions / views / reach).
-        impressions += Number(m.impressions ?? m.views ?? m.reach ?? 0);
-        const likes = Number(m.likes ?? m.favorites ?? m.reactions ?? 0);
-        const comments = Number(m.comments ?? m.replies ?? 0);
-        const shares = Number(m.shares ?? m.retweets ?? m.reposts ?? 0);
-        engagements += m.engagement != null ? Number(m.engagement) : likes + comments + shares;
+        impressions += getImpressions(name, m);
+        engagements += getEngagement(name, m);
       }
       const names = Object.keys(platforms).join(", ") || "no stats collected yet";
       console.log(

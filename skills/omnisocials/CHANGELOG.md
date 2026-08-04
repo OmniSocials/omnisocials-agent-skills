@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.15.0 (2026-08-04)
+
+### Fixed
+- **Engagement totals now match the dashboard.** `analytics:post` and `analytics:posts` computed engagement inline as likes + comments + shares, silently dropping LinkedIn link clicks and X quotes/bookmarks — the same post could report different engagement here than in the OmniSocials app. Both commands now use the same normalization as the dashboard, public API overview, and MCP servers (LinkedIn engagement includes link clicks, matching LinkedIn's own definition; X includes quotes and bookmarks; Instagram prefers `views` over `reach` for the exposure count).
+
+### Docs
+- **Account-level metric semantics.** `analytics:accounts` output for LinkedIn (profile and page) reports `impressions` as LIFETIME cumulative totals across all of the account's content — including posts published outside OmniSocials — as of the snapshot date, not a daily or windowed count. Rows carry an explanatory `note` and `impressions_period: "lifetime"` (after the backend deploys). Never compare these to a windowed export such as LinkedIn's native 90-day analytics; diff two snapshot dates instead.
+
 ## 1.14.0 (2026-08-02)
 
 ### Added
