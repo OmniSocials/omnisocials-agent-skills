@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.17.0 (2026-08-13)
+
+### Added
+- **TikTok in the Social Inbox.** The inbox commands now cover TikTok: `inbox:list --platform tiktok` lists comments on your TikTok videos, and `inbox:messages`, `inbox:read`, and `inbox:reply` work on those conversations like any other platform. TikTok is video comments only (no DMs or mentions), and TikTok replies are text-only, capped at 150 characters. Same opt-in `inbox:read` / `inbox:write` scopes as the rest of the inbox.
+
+### Fixed
+- **The inbox `--platform` flag doc was missing `x`.** X conversations have been supported all along; the documented list now reads `instagram|facebook|linkedin|tiktok|x`.
+
+## 1.16.0 (2026-08-12)
+
+### Added
+- **LinkedIn polls.** New `--linkedin-poll-json` flag on `posts:create`, `posts:create-and-publish`, and `posts:update`: takes the full `linkedin_poll` object keyed by channel — `{"linkedin": {"question", "options": [2-4 entries], "duration": "ONE_DAY"|"THREE_DAYS"|"SEVEN_DAYS"|"FOURTEEN_DAYS"}, "linkedin_page": {...}}` — for a non-sponsored LinkedIn poll (question max 140 chars, each option max 30 chars). `linkedin` (personal profile) and `linkedin_page` (company page) each carry an **independent** poll — set both keys to post a different poll to each. Mutually exclusive with media and a link share on that channel's post — combining them lets the poll silently win at publish time, so don't send both. On update the object is replaced wholesale (send the full desired state for both channels); set a channel's key to `null` (or pass `--linkedin-poll-json 'null'` for the whole flag) to clear that channel's poll and revert it to a normal post.
+
 ## 1.15.0 (2026-08-04)
 
 ### Fixed

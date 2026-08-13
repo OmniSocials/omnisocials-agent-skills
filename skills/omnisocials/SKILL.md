@@ -192,11 +192,11 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 
 ### Inbox (Social Inbox)
 
-Read and reply to DMs, comments, and mentions across connected accounts. **Requires the opt-in `inbox:read` / `inbox:write` scopes** — the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
+Read and reply to DMs, comments, and mentions across connected accounts. TikTok is supported for video comments only (no DMs or mentions); TikTok replies are text-only, capped at 150 characters. **Requires the opt-in `inbox:read` / `inbox:write` scopes** — the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
 
 | Command | Description |
 |---|---|
-| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
+| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin\|tiktok\|x`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
 | `inbox:messages <conversation-id>` | Full message history for one conversation, oldest→newest, each with direction, timestamp, and read/replied state. Flags: `--limit`, `--cursor`. Requires `inbox:read`. |
 | `inbox:read <conversation-id>` | Mark a conversation's messages as read. Requires `inbox:write`. |
 | `inbox:reply <conversation-id>` | Send a reply. Flags: `--text` (required), `--attachment-url`, `--attachment-type`. Requires `inbox:write`. |
@@ -285,6 +285,29 @@ Posts the given text as the first comment automatically, right after the post pu
 | `--linkedin-first-comment` | First comment on the LinkedIn profile post (max 1250 chars). Handy for "link in first comment" |
 | `--linkedin-page-first-comment` | First comment on the LinkedIn company page post (max 1250 chars) |
 | `--youtube-first-comment` | First comment on the YouTube video (max 10000 chars). The video must allow comments |
+
+#### LinkedIn poll
+Non-sponsored poll (LinkedIn's Poll API) — a question with 2-4 answer options and a duration, **independent per channel**: `linkedin` (personal profile) and `linkedin_page` (company page) can each carry their own poll, or none. Mutually exclusive with media and a link share on that channel's post: if the channel's post also has media/a link, the poll silently wins at publish time, so don't combine them.
+
+| Flag | Description |
+|---|---|
+| `--linkedin-poll-json` | Full `linkedin_poll` JSON object keyed by channel: `{"linkedin": {"question": "...", "options": ["...", "..."], "duration": "ONE_DAY\|THREE_DAYS\|SEVEN_DAYS\|FOURTEEN_DAYS"}, "linkedin_page": {...}}`. Each poll's `question` max 140 chars; `options` needs 2-4 entries, each max 30 chars. Omit a channel's key (or set it to `null`) to leave that channel a normal post. |
+
+Also works on `posts:update <id>` — the stored `linkedin_poll` object is replaced wholesale (both channels), so send the full desired state. Set a channel's key to `null` (or pass `--linkedin-poll-json 'null'` for the whole flag) to clear that channel's poll and revert it to a normal post.
+
+```bash
+# Same poll on the profile only
+omnisocials posts:create \
+  --content "What should we build next?" \
+  --accounts your-linkedin-account-id \
+  --linkedin-poll-json '{"linkedin":{"question":"What should we build next?","options":["Mobile app","Public API","More integrations"],"duration":"SEVEN_DAYS"}}'
+
+# A DIFFERENT poll on the profile and the page in one call
+omnisocials posts:create \
+  --content "What should we build next?" \
+  --accounts your-linkedin-profile-account-id,your-linkedin-page-account-id \
+  --linkedin-poll-json '{"linkedin":{"question":"What should WE build?","options":["A","B"],"duration":"SEVEN_DAYS"},"linkedin_page":{"question":"What should our COMPANY build?","options":["A","B","C"],"duration":"FOURTEEN_DAYS"}}'
+```
 
 #### TikTok
 | Flag | Description |

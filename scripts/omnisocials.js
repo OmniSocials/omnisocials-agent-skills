@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.15.0";
+const VERSION = "1.17.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -355,6 +355,26 @@ function buildPostBody(flags) {
     }
   }
   if (Object.keys(gb).length > 0) body.google_business = gb;
+
+  // LinkedIn poll(s) — non-sponsored, question + 2-4 options + duration,
+  // independent per channel. Mutually exclusive with media/link-share on
+  // that channel's post (a poll silently wins at publish time). Top-level
+  // object keyed by channel — {"linkedin": {...}, "linkedin_page": {...}}
+  // — not nested under the linkedin/linkedin_page option flags, since each
+  // channel's poll is set independently. Replaces wholesale on
+  // posts:update — set a channel's key to `null` (or pass the whole flag
+  // as `null`) to clear that channel's poll and revert it to a normal post.
+  if (flags["linkedin-poll-json"] !== undefined) {
+    let parsed;
+    try {
+      parsed = JSON.parse(flags["linkedin-poll-json"]);
+    } catch {
+      exitWithError(
+        '--linkedin-poll-json must be JSON, e.g. \'{"linkedin":{"question":"...","options":["...","..."],"duration":"SEVEN_DAYS"}}\' or \'null\' to clear'
+      );
+    }
+    body.linkedin_poll = parsed;
+  }
 
   // Merge per-platform option objects (pinterest/youtube/instagram/tiktok/x),
   // preserving any keys already set above (e.g. x.thread_parts).
@@ -1855,6 +1875,7 @@ PLATFORM FLAGS
   --facebook-first-comment       Auto first comment on the Facebook Page post (Page posts only)
   --linkedin-first-comment       Auto first comment on the LinkedIn profile post (e.g. link in first comment)
   --linkedin-page-first-comment  Auto first comment on the LinkedIn company page post
+  --linkedin-poll-json '<json>'  Non-sponsored LinkedIn poll(s), independent per channel: {"linkedin":{"question","options":[2-4],"duration":"ONE_DAY|THREE_DAYS|SEVEN_DAYS|FOURTEEN_DAYS"},"linkedin_page":{...}}. Mutually exclusive with media/link-share on that channel. A channel key set to null (or the whole flag as 'null') on posts:update clears it.
   --tiktok-privacy               TikTok privacy level
   --tiktok-disable-comment       Disable TikTok comments
   --tiktok-disable-duet          Disable TikTok duets
@@ -1872,6 +1893,7 @@ EXAMPLES
   omnisocials posts:create --text "New video!" --channels youtube --type reel --media-urls "https://example.com/video.mp4" --youtube-title "My Video" --youtube-privacy public
   omnisocials posts:create --text "Thread time" --channels x --x-thread "First tweet || Second tweet || Third"
   omnisocials posts:create --text "Spring sale, 20% off until Sunday" --channels google_business --google-business-cta-action LEARN_MORE --google-business-cta-url "https://example.com/sale"
+  omnisocials posts:create --text "What should we build next?" --channels linkedin --linkedin-poll-json '{"linkedin":{"question":"What should we build next?","options":["Mobile app","Public API","More integrations"],"duration":"SEVEN_DAYS"}}'
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
   omnisocials locations:search "Blue Bottle Coffee"
   omnisocials inbox:list --platform instagram --unread
