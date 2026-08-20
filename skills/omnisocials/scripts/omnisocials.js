@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.17.0";
+const VERSION = "1.18.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -222,9 +222,13 @@ function assemblePlatformOptions(flags) {
     },
     linkedin: {
       "linkedin-first-comment": "first_comment",
+      // Multi-image style: true = plain image gallery instead of the default
+      // swipeable PDF document carousel. Ignored for 0-1 images/videos/polls.
+      "linkedin-carousel-as-images": { key: "carousel_as_images", transform: (v) => v === true || v === "true" },
     },
     linkedin_page: {
       "linkedin-page-first-comment": "first_comment",
+      "linkedin-page-carousel-as-images": { key: "carousel_as_images", transform: (v) => v === true || v === "true" },
     },
     tiktok: {
       "tiktok-privacy": "privacy_level",
@@ -1875,6 +1879,8 @@ PLATFORM FLAGS
   --facebook-first-comment       Auto first comment on the Facebook Page post (Page posts only)
   --linkedin-first-comment       Auto first comment on the LinkedIn profile post (e.g. link in first comment)
   --linkedin-page-first-comment  Auto first comment on the LinkedIn company page post
+  --linkedin-carousel-as-images  true = post the profile post's 2+ images as a plain image gallery instead of the default swipeable PDF document carousel (false on posts:update reverts)
+  --linkedin-page-carousel-as-images  Same as above for the company page post
   --linkedin-poll-json '<json>'  Non-sponsored LinkedIn poll(s), independent per channel: {"linkedin":{"question","options":[2-4],"duration":"ONE_DAY|THREE_DAYS|SEVEN_DAYS|FOURTEEN_DAYS"},"linkedin_page":{...}}. Mutually exclusive with media/link-share on that channel. A channel key set to null (or the whole flag as 'null') on posts:update clears it.
   --tiktok-privacy               TikTok privacy level
   --tiktok-disable-comment       Disable TikTok comments

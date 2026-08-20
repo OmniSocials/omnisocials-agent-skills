@@ -286,6 +286,14 @@ Posts the given text as the first comment automatically, right after the post pu
 | `--linkedin-page-first-comment` | First comment on the LinkedIn company page post (max 1250 chars) |
 | `--youtube-first-comment` | First comment on the YouTube video (max 10000 chars). The video must allow comments |
 
+#### LinkedIn multi-image style
+By default a LinkedIn post with 2+ images publishes as LinkedIn's swipeable **PDF document carousel** (the images are rendered into a single PDF document server-side). These flags opt a channel out of that, into a plain multi-image gallery instead. Independent per channel; ignored for 0-1 images, videos, and polls.
+
+| Flag | Description |
+|---|---|
+| `--linkedin-carousel-as-images` | `true` = the profile post's images publish as a plain image gallery. On `posts:update`, `false` reverts to the document carousel; omitted keeps the current value |
+| `--linkedin-page-carousel-as-images` | Same for the company page post |
+
 #### LinkedIn poll
 Non-sponsored poll (LinkedIn's Poll API) — a question with 2-4 answer options and a duration, **independent per channel**: `linkedin` (personal profile) and `linkedin_page` (company page) can each carry their own poll, or none. Mutually exclusive with media and a link share on that channel's post: if the channel's post also has media/a link, the poll silently wins at publish time, so don't combine them.
 

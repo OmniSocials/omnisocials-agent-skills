@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.18.0 (2026-08-20)
+
+### Added
+- **LinkedIn multi-image style.** New `--linkedin-carousel-as-images` and `--linkedin-page-carousel-as-images` flags on `posts:create` and `posts:update`. By default a LinkedIn post with 2+ images publishes as LinkedIn's swipeable PDF document carousel; pass `true` to publish that channel's images as a plain multi-image gallery instead. Independent per channel; ignored for 0-1 images, videos, and polls. On `posts:update`, `false` reverts to the document carousel and omitting the flag keeps the current value. Maps to `carousel_as_images` on the API's `linkedin` / `linkedin_page` option objects.
+
 ## 1.17.0 (2026-08-13)
 
 ### Added
