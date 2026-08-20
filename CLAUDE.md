@@ -2,11 +2,11 @@
 
 ## Project Overview
 
-This is the OmniSocials agent-skills package. It provides a CLI tool and SKILL.md for AI agents to manage social media across 10 platforms via the OmniSocials API.
+This is the OmniSocials agent-skills package. It provides a CLI tool and SKILL.md for AI agents to manage social media across 11 platforms (12 channels) via the OmniSocials API.
 
 ## Structure
 
-- `scripts/omnisocials.js` - Zero-dependency Node.js CLI (the tool agents call)
+- `skills/omnisocials/scripts/omnisocials.js` - Zero-dependency Node.js CLI (the tool agents call). Lives inside the skill folder so `npx skills add` installs ship it; the old `scripts/omnisocials.js` root path is a require-shim kept for existing clones.
 - `skills/omnisocials/SKILL.md` - Instructions for AI agents (the brain)
 - `.claude-plugin/marketplace.json` - Claude Code plugin discovery
 - `tests/` - vitest test files
