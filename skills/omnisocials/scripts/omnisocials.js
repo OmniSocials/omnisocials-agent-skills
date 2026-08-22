@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.18.0";
+const VERSION = "1.20.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -240,6 +240,9 @@ function assemblePlatformOptions(flags) {
       "tiktok-brand-content-toggle": { key: "brand_content_toggle", transform: (v) => v === true || v === "true" },
       "tiktok-brand-organic-toggle": { key: "brand_organic_toggle", transform: (v) => v === true || v === "true" },
       "tiktok-auto-add-music": { key: "auto_add_music", transform: (v) => v === true || v === "true" },
+      // Auto first comment via the TikTok Business API (max 150 chars). Needs
+      // comments enabled on the TikTok channel card; video must be public.
+      "tiktok-first-comment": "first_comment",
     },
     x: {
       "x-reply-settings": "reply_settings",
@@ -428,6 +431,18 @@ function formatPost(post, index) {
   }
   if (post.published_urls && Object.keys(post.published_urls).length) {
     lines.push(`    Published: ${Object.values(post.published_urls).join(", ")}`);
+  }
+  // Multi-slide stories: one story per slide on the platform; published_urls
+  // only carries slide 1, so list every slide here.
+  if (post.story_slides && typeof post.story_slides === "object") {
+    for (const [platform, slides] of Object.entries(post.story_slides)) {
+      if (!Array.isArray(slides) || !slides.length) continue;
+      lines.push(`    ${platform} story slides (${slides.length}):`);
+      slides.forEach((slide, i) => {
+        const n = (typeof slide.index === "number" ? slide.index : i) + 1;
+        lines.push(`      ${n}. ${slide.url || slide.native_post_id || "(no url)"}`);
+      });
+    }
   }
   // Retry lineage: retry_of = the failed post this one retries; retries = retry
   // posts created from this one. A "published" post with empty published_urls
@@ -1526,6 +1541,10 @@ async function cmdAnalyticsBestTimes(config, flags) {
     });
     if (result.basis === "defaults") {
       console.log(`\nNot enough posting history yet (${result.sample_size} analyzed posts). These are cross-industry averages. Publish ${result.posts_needed} more posts on this platform to unlock recommendations from your own audience data.`);
+    } else if (result.basis === "audience") {
+      console.log(`\nNot enough posting history yet (${result.sample_size} analyzed posts), so these times come from when your followers are online. Publish ${result.posts_needed} more posts on this platform to blend in your own results.`);
+    } else if (result.basis === "own_data_and_audience") {
+      console.log(`\nBased on ${result.sample_size} posts from the last ${result.window_days} days, blended with when your followers are online (metric: ${result.metric}, times in ${result.timezone}).`);
     } else {
       console.log(`\nBased on ${result.sample_size} posts from the last ${result.window_days} days (metric: ${result.metric}, times in ${result.timezone}).`);
     }
@@ -1887,6 +1906,7 @@ PLATFORM FLAGS
   --tiktok-disable-duet          Disable TikTok duets
   --tiktok-disable-stitch        Disable TikTok stitches
   --tiktok-is-aigc               Mark as AI-generated content
+  --tiktok-first-comment         Auto first comment on the TikTok video (max 150 chars; needs comments enabled on the channel; video must be public)
   --x-reply-settings             X reply settings (following/mentionedUsers)
   --google-business-cta-action   GBP CTA button: LEARN_MORE, BOOK, ORDER, SHOP, SIGN_UP, CALL (GBP captions reject links/phone numbers — the button is the only way)
   --google-business-cta-url      CTA target URL, http(s):// (required for every action except CALL)

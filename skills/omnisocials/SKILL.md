@@ -44,7 +44,7 @@ IMPORTANT: Follow these rules at all times.
 2. **NEVER delete posts, media, or webhooks without explicit user confirmation.**
 3. **Always list accounts first** before creating posts, to get valid channel IDs. Do not guess channel IDs.
 4. **Always verify media requirements** before creating posts:
-   - Stories: ALWAYS require an image or video
+   - Stories: ALWAYS require an image or video. A story takes 1 to 10 media items; EACH item is one slide, published as its own story on Instagram/Facebook in the order given (more than 10 returns 400). Story videos are max 60s per slide. Ask the user which media and in what order.
    - Reels: ALWAYS require a video
    - Instagram posts: ALWAYS require at least one image or video
    - TikTok posts: ALWAYS require at least one image or video
@@ -122,12 +122,12 @@ Follow this workflow when creating posts:
 
 | Command | Description |
 |---|---|
-| `posts:list` | List posts. Flags: `--status draft\|scheduled\|published\|failed`, `--limit`, `--offset` |
+| `posts:list` | List posts. Flags: `--status draft\|in_approval\|scheduled\|posting\|published\|failed\|warning` (`in_approval` = waiting for a reviewer in an approval workflow), `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
-| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights). Records also carry `duration_seconds` (integer, nullable): video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and platforms that don't expose it (Instagram's media API has no duration field). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25; X defaults to 10 unless set explicitly — its API bills per returned post), `--platforms` (comma-separated filter). X results may come from a snapshot up to 24h old, refreshed right after publishing to X through OmniSocials. Requires the `analytics:read` scope. |
+| `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights; TikTok includes average_time_watched/full_video_watched_rate/total_time_watched/favorites/reach when the workspace enabled TikTok comments). Records also carry `duration_seconds` (integer, nullable): video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and platforms that don't expose it (Instagram's media API has no duration field). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25; X defaults to 10 unless set explicitly — its API bills per returned post), `--platforms` (comma-separated filter). X results may come from a snapshot up to 24h old, refreshed right after publishing to X through OmniSocials. Requires the `analytics:read` scope. |
 | `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
-| `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create` |
+| `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create`. `--schedule` on a post pending approval (`in_approval`) moves only the time and does not change its status |
 | `posts:publish <id>` | Publish a draft/scheduled post now. Refuses posts whose status is `failed` or `warning`; use `posts:retry` for those |
 | `posts:retry <id>` | Retry the failed platforms of a failed or partially failed post; succeeded platforms are never re-published; async, max 3 retries per platform. The response means the retry is queued: poll `posts:get` for the outcome. After 3 retries on a platform the API returns `max_retries_reached` and the post must be recreated. Post responses carry `retry_of` (the failed post this one retries) and `retries` (retry posts created from this one); a `published` post with empty `published_urls` and `retries` set is a resolved failure whose live URLs are on the retry post |
 | `posts:delete <id>` | Delete a post (cannot be undone) |
@@ -184,11 +184,11 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 
 | Command | Description |
 |---|---|
-| `analytics:post <post-id>` | Get post analytics: impressions, engagements, likes, comments, shares, per-platform stats (thread posts on X/Bluesky/Mastodon are summed across their parts) |
-| `analytics:best-times` | Recommended posting slots (day + hour) for one platform, computed from the workspace's own posting history (recency-weighted, outlier-damped, in the account's timezone). Top 3 slots + per-day scores. Under 15 analyzed posts it returns clearly-labeled industry defaults with `posts_needed` — tell the user that. Use before scheduling when no time was specified. Flags: `--platform` (required), `--timezone` (IANA override). Requires `analytics:read`. |
+| `analytics:post <post-id>` | Get post analytics: impressions, reach, engagements, likes, comments, shares, saves, clicks, per-platform stats (thread posts on X/Bluesky/Mastodon are summed across their parts; rates and averages are averaged). Per platform the raw `metrics` carry everything it reports: link_clicks, profile_visits, follows (follows gained from the post), reactions by type, video keys (video_views, avg_watch_time, total_watch_time, watch_time_percentage, completion_rate, skip_rate, replays, engaged_views), YouTube traffic_sources, TikTok impression_sources/audience_types, Pinterest pin_clicks/outbound_clicks, Instagram story navigation and completion. Items a platform cannot measure (Google Business posts, deleted videos) carry `metrics_unavailable: true` and a `note` instead of zeros. |
+| `analytics:best-times` | Recommended posting slots (day + hour) for one platform, computed from the workspace's own posting history (recency-weighted, outlier-damped, in the account's timezone), blended with when the audience is online where the platform provides it (Instagram, TikTok Business; `basis: own_data_and_audience`, response carries `audience_online`). Top 3 slots + per-day scores. Under 15 analyzed posts it uses the audience-online profile alone (`basis: audience`) or returns clearly-labeled industry defaults with `posts_needed` — tell the user that. Use before scheduling when no time was specified. Flags: `--platform` (required), `--timezone` (IANA override). Requires `analytics:read`. |
 | `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
-| `analytics:accounts` | Account-level analytics (followers, subscribers). Flags: `--platform`, `--date YYYY-MM-DD`. **Metric scope varies by platform — read each row's `note`.** LinkedIn (profile + page) `impressions` are LIFETIME totals across ALL of the account's content (including posts published outside OmniSocials) as of the snapshot date — never compare them to a windowed export like LinkedIn's native 90-day analytics; diff two snapshot dates to measure a window. Some platforms (e.g. Instagram) report no account-level impressions at all. |
+| `analytics:accounts` | Account-level analytics: followers, following, posts, plus the day values the platform reports for the snapshot date (impressions/views, reach, engagement, profile_views, link_clicks, follows_gained, follows_lost; Google Business calls, direction_requests, website_clicks, average_rating, review_count; Pinterest monthly_views). Rows with day values carry `period: "daily"`. Audience objects when available: `demographics` (+ `demographics_unit`) and `online_followers` (UTC hour to followers online; Instagram and TikTok Business, 100+ followers). Flags: `--platform`, `--date YYYY-MM-DD`. **Metric scope varies by platform — read each row's `note`.** LinkedIn profiles keep a lifetime total under `impressions_lifetime` (all content ever, including posts published outside OmniSocials) and carry `period: "lifetime"` when no daily breakdown is served; never compare a lifetime total to a windowed export. A missing key means the platform does not report it (Bluesky and Mastodon have no views; YouTube day values need the YouTube Analytics scope; TikTok day values need the Business authorization). |
 
 ### Inbox (Social Inbox)
 
@@ -229,8 +229,8 @@ All commands support these flags:
 
 | Platform | Post | Story | Reel | Media Required |
 |---|---|---|---|---|
-| Instagram | Yes | Yes | Yes | Always (image or video) |
-| Facebook | Yes | Yes | Yes | Optional for posts, required for stories/reels |
+| Instagram | Yes | Yes (1-10 slides, published in order) | Yes | Always (image or video) |
+| Facebook | Yes | Yes (1-10 slides, published in order) | Yes | Optional for posts, required for stories/reels |
 | LinkedIn (`linkedin`) | Yes | No | No | Optional |
 | LinkedIn Page (`linkedin_page`) | Yes | No | No | Optional |
 | YouTube | No | No | Yes (Shorts) | Always (video) |
@@ -275,7 +275,7 @@ All commands support these flags:
 | `--instagram-trial-reel` | Publish the reel as a **Trial Reel** — shown to non-followers first to test performance. ONLY use when the user explicitly asks for a Trial Reel. **Reels only.** Not available on every account: Instagram requires roughly 1,000+ followers and enables the feature per account; ineligible accounts fail at publish with a clear error. |
 | `--instagram-trial-graduation-strategy` | How a Trial Reel graduates to all followers: `MANUAL` (default — the user decides in the Instagram app) or `SS_PERFORMANCE` (Instagram shares it automatically if it performs well). Only with `--instagram-trial-reel` |
 
-#### Auto first comment (Instagram, Facebook, LinkedIn, YouTube)
+#### Auto first comment (Instagram, Facebook, LinkedIn, YouTube, TikTok)
 Posts the given text as the first comment automatically, right after the post publishes. Common for keeping hashtags or a link out of the main caption. One flag per channel, so you can set a different first comment per platform in the same call. Not posted for stories.
 
 | Flag | Description |
@@ -285,6 +285,7 @@ Posts the given text as the first comment automatically, right after the post pu
 | `--linkedin-first-comment` | First comment on the LinkedIn profile post (max 1250 chars). Handy for "link in first comment" |
 | `--linkedin-page-first-comment` | First comment on the LinkedIn company page post (max 1250 chars) |
 | `--youtube-first-comment` | First comment on the YouTube video (max 10000 chars). The video must allow comments |
+| `--tiktok-first-comment` | First comment on the TikTok video (max 150 chars). Needs **comments enabled** on the TikTok channel card (a second TikTok authorization); otherwise the post publishes and `first_comment_result.status` is `failed` with an explanatory error. Video must be public and allow comments. If TikTok returns the final video id a few minutes after publish, the comment posts automatically once it resolves (`first_comment_result.pending` is true meanwhile) |
 
 #### LinkedIn multi-image style
 By default a LinkedIn post with 2+ images publishes as LinkedIn's swipeable **PDF document carousel** (the images are rendered into a single PDF document server-side). These flags opt a channel out of that, into a plain multi-image gallery instead. Independent per channel; ignored for 0-1 images, videos, and polls.

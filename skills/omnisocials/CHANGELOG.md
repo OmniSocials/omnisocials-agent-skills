@@ -1,5 +1,23 @@
 # Changelog
 
+## 1.20.0 (2026-08-22)
+
+### Added
+- **Every metric the platforms report.** `analytics:post` and `analytics:posts` now return the full per-platform metric set: reach, link clicks, profile visits, follows from the post, saves, reactions by type, video views, watch time, completion and skip rate, YouTube traffic sources, TikTok impression sources and viewer types, Pinterest pin and outbound clicks, Instagram story navigation and completion, Mastodon poll results. Items a platform cannot measure carry `metrics_unavailable: true` and a `note` instead of zeros. Rates and averages are averaged across thread parts, counts are summed. No flag change.
+- **Account day values and audience data.** `analytics:accounts` rows carry the day values the platform reports (impressions/views, reach, engagement, profile_views, link_clicks, follows_gained, follows_lost, Google Business calls, direction_requests, website_clicks, average_rating, review_count, Pinterest monthly_views) with `period: "daily"`, plus `demographics` and `online_followers` where available. LinkedIn profile rows keep the lifetime total under `impressions_lifetime`; `impressions_period` is gone.
+- **Best times blend in when the audience is online.** `analytics:best-times` returns `basis: own_data_and_audience` or `audience` for Instagram and TikTok Business accounts, with `audience_online` (hour to followers online). The CLI prints the basis.
+
+### Fixed
+- Pinterest pin analytics were always zero (server-side parsing bug); they now return real numbers.
+- `in_approval` was an undocumented `posts:list --status` value. A post held for review by an approval workflow always returned `status: "in_approval"`, and the filter always accepted it, but it was missing from the docs. `posts:update --schedule` on such a post moves only the time and no longer flips it to `scheduled` (previously it silently exited the approval queue).
+
+## 1.19.0 (2026-08-21)
+
+### Added
+- **TikTok first comment.** `posts:create` / `posts:update` accept `--tiktok-first-comment` (max 150 chars). Posted through the TikTok Business API right after the video publishes, so the workspace's TikTok channel must have comments enabled (the "Enable comments" authorization on the channel card); otherwise `first_comment_result.status` is `failed` with an explanatory error. Video must be public and allow comments. When TikTok returns the final video id a few minutes after publish, `first_comment_result.pending` is true until the comment posts automatically.
+- **TikTok watch-depth metrics.** `analytics:post`, `analytics:posts`, and `posts:recent-platform` include `average_time_watched`, `full_video_watched_rate`, `total_time_watched`, `favorites`, and `reach` for TikTok videos when the workspace enabled TikTok comments (grants made before 2026-08-22 need the "Unlock watch-time analytics" consent once). Keys are absent, not zero, when unavailable. No flag change.
+- **Multi-slide stories.** `posts:create --type story` with several `--media-urls` / `--media-ids` now creates one story per item, published in the order given (1 to 10 slides; more returns 400). Instagram and Facebook have no multi-slide story container, so each slide is its own story. Story videos are capped at 60 seconds per slide. After publishing, `posts:get` shows `story_slides` (every slide's native id and URL per platform; `published_urls` keeps the first slide), and `analytics:post` returns a per-slide `story_slides` breakdown next to the summed platform totals. No CLI flag change.
+
 ## 1.18.0 (2026-08-20)
 
 ### Added
