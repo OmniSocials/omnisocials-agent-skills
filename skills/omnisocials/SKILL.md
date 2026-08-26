@@ -50,7 +50,7 @@ IMPORTANT: Follow these rules at all times.
    - TikTok posts: ALWAYS require at least one image or video
    - Pinterest posts: ALWAYS require an image AND a `--pinterest-board-id`
    - Other platforms (LinkedIn Profile, LinkedIn Page, X, Facebook posts, Bluesky, Threads, Mastodon, Google Business): Media is optional
-   - **Per-platform media caps** (exceeding returns a 400 validation_error stating the exact limit): max items — X/Bluesky/Mastodon ≤4, Instagram/Threads ≤10, TikTok ≤35 photos. Mixing images + video in one post: allowed on Instagram/Threads (mixed carousels), rejected on Facebook/LinkedIn/LinkedIn Page/X/Bluesky/Mastodon/TikTok (images only, or a single video). Video duration/size — **X 140s (2min 20s) / 512MB**, Bluesky 180s, Threads 5min, Instagram 15min, TikTok 10min, YouTube Short 3min. If the user's video is over the cap, tell them the limit so they can trim it.
+   - **Per-platform media caps** (exceeding returns a 400 validation_error stating the exact limit): max items — X/Bluesky/Mastodon ≤4, Instagram/Threads ≤10, TikTok ≤35 photos; the same caps apply per part of a thread (4 per part on X/Bluesky/Mastodon, 10 per part on Threads). Mixing images + video in one post: allowed on Instagram/Threads (mixed carousels), rejected on Facebook/LinkedIn/LinkedIn Page/X/Bluesky/Mastodon/TikTok (images only, or a single video). Video duration/size — **X 140s (2min 20s) / 512MB**, Bluesky 180s, Threads 5min, Instagram 15min, TikTok 10min, YouTube Short 3min. If the user's video is over the cap, tell them the limit so they can trim it.
    - **Pinterest board — auto-default to first**: If the user wants to post to Pinterest but hasn't specified a board, do NOT block on asking and do NOT skip Pinterest. Run `accounts:get <pinterest_account_id>` — its output lists each board's name and ID. Use the FIRST board automatically. After the post is created, mention to the user which board was used (e.g. "Posted to your 'Marketing' board on Pinterest — let me know if you'd prefer a different one and I'll move it."). If the user named a specific board in the request, match it case-insensitively against the list and use that one instead.
 5. **No duplicate content** across posts unless explicitly requested.
 6. **Always confirm timezone/datetime** with the user when scheduling posts.
@@ -69,12 +69,15 @@ IMPORTANT: Follow these rules at all times.
 | "Post a thread to X" | `posts:create --channels <x_id> --x-thread "part 1 || part 2 || part 3"` |
 | "Post a thread to Bluesky" | `posts:create --channels <bluesky_id> --bluesky-thread "part 1 || part 2 || part 3"` |
 | "Post a thread to Mastodon" | `posts:create --channels <mastodon_id> --mastodon-thread "part 1 || part 2 || part 3"` |
+| "Post a thread to Threads" | `posts:create --channels <threads_id> --threads-thread "part 1 || part 2 || part 3"` |
 | "Tag a location on Instagram" | `locations:search "<place name>"`, then `posts:create ... --location-id <id>` |
+| "Tag a location on Threads" | `locations:search "<place name>" --platform threads`, then `posts:create ... --threads-location-id <id>` (rolling out) |
 | "Post a reel with music" | `audio:search "<song or artist>"` (no query = trending), then `posts:create ... --type reel --instagram-audio-id <id>` |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
 | "Any new DMs / comments?" | `inbox:list --unread` (add `--platform` / `--type dm\|comment\|mention` to filter) — needs the `inbox:read` scope |
 | "Reply to that message" | `inbox:messages <conversation-id>` to read the thread, then `inbox:reply <conversation-id> --text "..."` — needs `inbox:write` |
 | "Mark that conversation read" | `inbox:read <conversation-id>` — needs `inbox:write` |
+| "Hide that Threads reply" | `inbox:hide <message-id>` (message id from `inbox:messages`; `--unhide` reverses; needs `inbox:write`) |
 | "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
 | "Add my usual hashtags" | `hashtag-sets:list` to find the set, then `posts:create ... --hashtag-set "<name>"` (add `--hashtag-placement first_comment` to keep tags out of the caption) |
 | "Save these hashtags for reuse" | `hashtag-sets:create --name "Brand" --tags "#a #b #c"` |
@@ -125,7 +128,7 @@ Follow this workflow when creating posts:
 | `posts:list` | List posts. Flags: `--status draft\|in_approval\|scheduled\|posting\|published\|failed\|warning` (`in_approval` = waiting for a reviewer in an approval workflow), `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
 | `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights; TikTok includes average_time_watched/full_video_watched_rate/total_time_watched/favorites/reach when the workspace enabled TikTok comments). Records also carry `duration_seconds` (integer, nullable): video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and platforms that don't expose it (Instagram's media API has no duration field). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25; X defaults to 10 unless set explicitly — its API bills per returned post), `--platforms` (comma-separated filter). X results may come from a snapshot up to 24h old, refreshed right after publishing to X through OmniSocials. Requires the `analytics:read` scope. |
-| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, plus platform flags |
+| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`, `--threads-location-id`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
 | `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create`. `--schedule` on a post pending approval (`in_approval`) moves only the time and does not change its status |
 | `posts:publish <id>` | Publish a draft/scheduled post now. Refuses posts whose status is `failed` or `warning`; use `posts:retry` for those |
@@ -165,7 +168,7 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 
 | Command | Description |
 |---|---|
-| `locations:search "<name>"` | Search Facebook Places for taggable locations (min 2 chars). Returns `location_id` values to pass to `posts:create --location-id` for Instagram place tags. |
+| `locations:search "<name>"` | Search taggable locations (min 2 chars). Default `--platform instagram` searches Facebook Places and returns `location_id` values for `posts:create --location-id`. `--platform threads` searches Threads locations and returns ids for `posts:create --threads-location-id`; it also accepts `--latitude` + `--longitude` instead of a name. The two id namespaces are DIFFERENT: never pass an Instagram `location_id` as a Threads one or vice versa. Threads location search is rolling out; until Meta approves the permission the API answers `not_available`, and older Threads connections answer `threads_reauth_required` until reconnected. |
 
 ### Audio (Instagram Reel music)
 
@@ -184,7 +187,7 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 
 | Command | Description |
 |---|---|
-| `analytics:post <post-id>` | Get post analytics: impressions, reach, engagements, likes, comments, shares, saves, clicks, per-platform stats (thread posts on X/Bluesky/Mastodon are summed across their parts; rates and averages are averaged). Per platform the raw `metrics` carry everything it reports: link_clicks, profile_visits, follows (follows gained from the post), reactions by type, video keys (video_views, avg_watch_time, total_watch_time, watch_time_percentage, completion_rate, skip_rate, replays, engaged_views), YouTube traffic_sources, TikTok impression_sources/audience_types, Pinterest pin_clicks/outbound_clicks, Instagram story navigation and completion. Items a platform cannot measure (Google Business posts, deleted videos) carry `metrics_unavailable: true` and a `note` instead of zeros. |
+| `analytics:post <post-id>` | Get post analytics: impressions, reach, engagements, likes, comments, shares, saves, clicks, per-platform stats (thread posts on X/Bluesky/Mastodon/Threads are summed across their parts; rates and averages are averaged). Per platform the raw `metrics` carry everything it reports: link_clicks, profile_visits, follows (follows gained from the post), reactions by type, video keys (video_views, avg_watch_time, total_watch_time, watch_time_percentage, completion_rate, skip_rate, replays, engaged_views), YouTube traffic_sources, TikTok impression_sources/audience_types, Pinterest pin_clicks/outbound_clicks, Instagram story navigation and completion. Items a platform cannot measure (Google Business posts, deleted videos) carry `metrics_unavailable: true` and a `note` instead of zeros. |
 | `analytics:best-times` | Recommended posting slots (day + hour) for one platform, computed from the workspace's own posting history (recency-weighted, outlier-damped, in the account's timezone), blended with when the audience is online where the platform provides it (Instagram, TikTok Business; `basis: own_data_and_audience`, response carries `audience_online`). Top 3 slots + per-day scores. Under 15 analyzed posts it uses the audience-online profile alone (`basis: audience`) or returns clearly-labeled industry defaults with `posts_needed` — tell the user that. Use before scheduling when no time was specified. Flags: `--platform` (required), `--timezone` (IANA override). Requires `analytics:read`. |
 | `analytics:posts <id,id,...>` | Get analytics for up to 100 posts in one call (bulk). Use this instead of looping `analytics:post` to avoid the rate limit. |
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD` |
@@ -192,14 +195,15 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 
 ### Inbox (Social Inbox)
 
-Read and reply to DMs, comments, and mentions across connected accounts. TikTok is supported for video comments only (no DMs or mentions); TikTok replies are text-only, capped at 150 characters. **Requires the opt-in `inbox:read` / `inbox:write` scopes** — the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
+Read and reply to DMs, comments, and mentions across connected accounts. TikTok is supported for video comments only (no DMs or mentions); TikTok replies are text-only, capped at 150 characters. Threads is supported for replies on the user's posts (`type: comment`) and mentions (no DMs); replies publish as native Threads replies, and replies on the user's own posts can be hidden with `inbox:hide`. The Threads inbox is rolling out: until Meta approves the permissions, Threads conversations do not appear and Threads replies/hides return a clear 400. **Requires the opt-in `inbox:read` / `inbox:write` scopes** — the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
 
 | Command | Description |
 |---|---|
-| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin\|tiktok\|x`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
+| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin\|tiktok\|x\|threads`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
 | `inbox:messages <conversation-id>` | Full message history for one conversation, oldest→newest, each with direction, timestamp, and read/replied state. Flags: `--limit`, `--cursor`. Requires `inbox:read`. |
 | `inbox:read <conversation-id>` | Mark a conversation's messages as read. Requires `inbox:write`. |
-| `inbox:reply <conversation-id>` | Send a reply. Flags: `--text` (required), `--attachment-url`, `--attachment-type`. Requires `inbox:write`. |
+| `inbox:reply <conversation-id>` | Send a reply. Flags: `--text` (required), `--attachment-url`, `--attachment-type`. Requires `inbox:write`. A Threads reply needs the Threads reply permission on the connection; a 401 `reauth_required` means the user must reconnect Threads in the dashboard. |
+| `inbox:hide <message-id>` | Hide a reply someone left on one of the user's Threads posts, as the post owner (`--unhide` reverses it). Threads only; takes the message `id` from `inbox:messages`, NOT the conversation id. Only incoming top-level replies can be hidden (nested replies return `not_hideable`). Rolling out. Requires `inbox:write`. |
 
 ### Webhooks
 
@@ -238,7 +242,7 @@ All commands support these flags:
 | X (Twitter) | Yes | No | No | Optional |
 | Pinterest | Yes | No | No | Always (image or video + board_id) |
 | Bluesky | Yes | No | No | Optional |
-| Threads | Yes | No | No | Optional |
+| Threads | Yes (single post or a 2-25 part thread via `--threads-thread`; location tag via `--threads-location-id`; inbox replies/mentions via `inbox:*`, all rolling out) | No | No | Optional |
 | Mastodon | Yes | No | No | Optional |
 | Google Business | Yes | No | No | Optional |
 
@@ -348,6 +352,8 @@ All four also work on `posts:update <id>` to add or change the CTA on a draft/sc
 | `--x-thread "a \|\| b \|\| c"` | Post a thread. Parts are split on `\|\|` (2–25 parts). For per-tweet media, build the post with `--json` and a full `x.thread_parts` array instead. |
 | `--bluesky-thread "a \|\| b \|\| c"` | Post a Bluesky thread. Parts are split on `\|\|` (2–25 parts, each ≤ 300 chars). Links, mentions and hashtags become clickable automatically. For per-post media, build the post with `--json` and a full `bluesky.thread_parts` array instead. |
 | `--mastodon-thread "a \|\| b \|\| c"` | Post a Mastodon thread. Parts are split on `\|\|` (2–25 parts, each ≤ 500 chars). Each toot replies to the previous one natively. For per-toot media, build the post with `--json` and a full `mastodon.thread_parts` array instead. |
+| `--threads-thread "a \|\| b \|\| c"` | Post a Threads (Meta) thread. Parts are split on `\|\|` (2–25 parts, each ≤ 500 chars). Each part is published as a reply to the previous one from the same account; the first part is the post caption. For per-part media (up to 10 items per part, images and videos mixed, `{url, alt}` entries allowed), build the post with `--json` and a full `threads.thread_parts` array instead. On `posts:update`, `threads.thread_parts: null` turns the thread back into a single post. Rolling out: needs the Threads reply permission, which Meta is still reviewing; until then the API returns a 400 saying Threads threads are not available yet. Once enabled, accounts connected earlier must be reconnected once in the OmniSocials dashboard. |
+| `--threads-location-id <id>` | Tag a location on the Threads post. Takes a Threads location id from `locations:search --platform threads` (NOT a Facebook Place ID; never reuse `--location-id` values). On a multi-post thread the tag goes on the first post. On `posts:update`, pass the literal value `null` to remove the tag. Rolling out: needs the Threads location permission (`threads_location_tagging`), which Meta is still reviewing; until then the API returns a 400 saying location tagging is not available yet, and older connections must be reconnected once in the OmniSocials dashboard. |
 
 #### Link preview (LinkedIn / Facebook)
 | Flag | Description |
@@ -378,7 +384,7 @@ The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram":
 
 **PDF by URL:** a PDF passed via `--media-urls` (or `media_urls` in the API) is rasterized into one image slide per page (max 20, in order) — on LinkedIn it publishes as a swipeable document, elsewhere as an image carousel. Same behaviour as uploading the PDF via `media:upload`.
 
-**Alt text (accessibility descriptions):** any `media_urls` entry can be an object `{ "url": "...", "alt": "..." }` (and any `media_ids` entry `{ "id": "...", "alt": "..." }`, including thread-part media) instead of a bare string — max 1500 chars. Delivered to Mastodon (media description — the Mastodon community strongly values alt text), Bluesky (embed alt), X (photos/GIFs only, clamped to 1000), Pinterest (fallback for `pinterest.alt_text`), Instagram (`alt_text` on image posts and carousel image slides; not Reels/Stories; clamped to 1000) and LinkedIn (`altText` on images only, single and multi-image; not video/documents); other platforms ignore it. The `--media-urls` flag takes bare URLs only, so call the API directly for alt entries, e.g. a Mastodon post: `{"content": {"default": "Morning ride 🐘"}, "accounts": ["<mastodon_id>"], "media_urls": [{"url": "https://example.com/bike.jpg", "alt": "A red bicycle leaning against a brick wall"}]}`. `posts:get --json` reads alt back on each media item.
+**Alt text (accessibility descriptions):** any `media_urls` entry can be an object `{ "url": "...", "alt": "..." }` (and any `media_ids` entry `{ "id": "...", "alt": "..." }`, including thread-part media) instead of a bare string — max 1500 chars. Delivered to Mastodon (media description — the Mastodon community strongly values alt text), Bluesky (embed alt), X (photos/GIFs only, clamped to 1000), Pinterest (fallback for `pinterest.alt_text`), Instagram (`alt_text` on image posts and carousel image slides; not Reels/Stories; clamped to 1000), LinkedIn (`altText` on images only, single and multi-image; not video/documents), and Threads (`alt_text` on every image and video, including carousel items and thread parts); other platforms ignore it. The `--media-urls` flag takes bare URLs only, so call the API directly for alt entries, e.g. a Mastodon post: `{"content": {"default": "Morning ride 🐘"}, "accounts": ["<mastodon_id>"], "media_urls": [{"url": "https://example.com/bike.jpg", "alt": "A red bicycle leaning against a brick wall"}]}`. `posts:get --json` reads alt back on each media item.
 
 ## Examples
 
@@ -446,12 +452,26 @@ link: https://example.com/shop"
 ./scripts/omnisocials.js posts:create --channels <mastodon_id> --mastodon-thread "First point || Second point || Wrapping up"
 ```
 
+### Post a Threads thread
+```
+./scripts/omnisocials.js posts:create --channels <threads_id> --threads-thread "First point || Second point || Wrapping up"
+```
+
 ### Tag an Instagram location
 ```
 ./scripts/omnisocials.js locations:search "Blue Bottle Coffee"
 # Returns: location_id: 1234567890  Blue Bottle Coffee  — 1 Ferry Building, San Francisco
 
 ./scripts/omnisocials.js posts:create --text "Coffee time" --channels <instagram_id> --media-urls "https://example.com/photo.jpg" --location-id 1234567890
+```
+
+### Tag a Threads location (rolling out)
+```
+./scripts/omnisocials.js locations:search "Griffith Observatory" --platform threads
+# Returns: threads.location_id: 17841400000000000  Griffith Observatory  (2800 E Observatory Rd, Los Angeles, United States)
+# Coordinates also work: locations:search --platform threads --latitude 34.1184 --longitude -118.3004
+
+./scripts/omnisocials.js posts:create --text "Best view in the city" --channels <threads_id> --threads-location-id 17841400000000000
 ```
 
 ### Upload a local file into a folder
@@ -475,6 +495,11 @@ link: https://example.com/shop"
 ./scripts/omnisocials.js inbox:messages "<conversation_id>"
 ./scripts/omnisocials.js inbox:reply "<conversation_id>" --text "Thanks so much for the kind words!"
 ./scripts/omnisocials.js inbox:read "<conversation_id>"
+
+# Threads only (rolling out): hide a reply on your own post, using the
+# message id printed by inbox:messages (not the conversation id)
+./scripts/omnisocials.js inbox:hide "<message_id>"
+./scripts/omnisocials.js inbox:hide "<message_id>" --unhide
 ```
 
 ### Audit a brand-new workspace's existing content (nothing posted via OmniSocials yet)

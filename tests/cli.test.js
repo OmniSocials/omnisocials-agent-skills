@@ -238,6 +238,25 @@ describe("Inbox commands", () => {
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Usage:");
   });
+
+  it("inbox:hide requires a message id", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:hide",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("inbox:hide is a known command (requires an API key)", async () => {
+    const { stderr, exitCode } = await run(["inbox:hide", "123"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("API key not found");
+    expect(stderr).not.toContain("Unknown command");
+  });
 });
 
 describe("config:show with env var", () => {

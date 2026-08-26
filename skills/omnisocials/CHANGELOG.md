@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.21.0 (2026-08-23)
+
+### Added
+- Post threads on **Threads** (Meta) from the CLI. `posts:create --threads-thread "part 1 || part 2 || part 3"` splits the text on `||` into a chained thread, the same form as `--x-thread`, `--bluesky-thread`, and `--mastodon-thread` (2-25 parts, each up to 500 chars). Each part is published as a reply to the previous one from the same account, and the first part is the post caption. For per-part media (up to 10 items per part, images and videos mixed, `{url, alt}` entries allowed), build the post with `--json` and a full `threads.thread_parts` array instead. On `posts:update`, `threads.thread_parts: null` turns the thread back into a single post. If a later part fails, `posts:retry` resumes from the first unpublished part.
+- **Alt text on Threads.** `{url, alt}` / `{id, alt}` media entries are now delivered to Threads as `alt_text` on every image and video, including carousel items and thread parts. Previously Threads ignored them.
+- **Threads in the Social Inbox (rolling out).** `inbox:list --platform threads` lists replies people leave on the user's Threads posts (`type: comment`, one conversation per root post) and mentions (`type: mention`); Threads has no DMs. `inbox:reply` answers both as a native Threads reply; a 401 `reauth_required` means the Threads connection must be reconnected to grant the reply permission. New command `inbox:hide <message-id>` hides a reply on the user's own post as the post owner, `--unhide` reverses it; only incoming top-level replies can be hidden (nested replies return `not_hideable`), and the message id comes from `inbox:messages`, not the conversation id. `inbox:messages` now prints a message's permalink when known and a "hidden on Threads" marker on hidden replies. Until Meta approves the permissions, Threads conversations do not appear and Threads replies/hides return a clear 400 saying the feature is not available yet.
+- **Threads location tagging (rolling out).** `locations:search` gains `--platform instagram|threads`, plus `--latitude`/`--longitude` for Threads coordinate search; Threads results print `threads.location_id` values, a DIFFERENT id namespace from Instagram's Facebook Place IDs (never reuse one as the other). New `posts:create` / `posts:update` flag `--threads-location-id <id>` tags the place on the Threads post (on a thread chain, the first post); passing the literal value `null` on update removes the tag. Needs the `threads_location_tagging` permission on the Threads connection; until Meta's review passes the API returns a 400 saying location tagging is not available yet, and older connections must be reconnected once in the OmniSocials dashboard.
+
+### Changed
+- `analytics:post` and `analytics:posts` sum a Threads thread's parts into one per-platform total, the same as X, Bluesky, and Mastodon threads. `thread_parts` on the entry tells you how many parts were summed.
+
+### Fixed
+- `posts:create` and `posts:create-and-publish` no longer require `--text` when a thread flag (`--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`) is given. The documented thread-only commands exited with a usage error before; the caption now comes from the first part, as the API intends.
+
 ## 1.20.0 (2026-08-22)
 
 ### Added

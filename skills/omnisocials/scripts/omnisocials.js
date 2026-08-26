@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.20.0";
+const VERSION = "1.21.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -269,6 +269,11 @@ function assemblePlatformOptions(flags) {
 // and posts:update. Centralised so all three stay in sync as the API grows.
 // `content` is only set when --text is given (update can omit it). Returns the
 // body object; calls exitWithError on malformed --user-tags JSON.
+// The "||"-separated thread flags. A post built from one of these needs no
+// --text: the API derives the caption from the first part.
+const THREAD_FLAGS = ["x-thread", "bluesky-thread", "mastodon-thread", "threads-thread"];
+const hasThreadFlag = (flags) => THREAD_FLAGS.some((f) => flags[f]);
+
 function buildPostBody(flags) {
   const body = {};
 
@@ -342,6 +347,32 @@ function buildPostBody(flags) {
       body.mastodon = { ...(body.mastodon || {}), thread_parts: parts };
   }
 
+  // Threads (Meta) thread: same "||"-separated CLI form as --x-thread.
+  //   --threads-thread "first post || second post || third"
+  // For per-part media use --json with a full thread_parts array instead.
+  if (flags["threads-thread"]) {
+    const parts = String(flags["threads-thread"])
+      .split("||")
+      .map((s) => s.trim())
+      .filter(Boolean)
+      .map((text) => ({ text }));
+    if (parts.length)
+      body.threads = { ...(body.threads || {}), thread_parts: parts };
+  }
+
+  // Threads (Meta) location tag. Takes a Threads location id from
+  // `locations:search --platform threads` (NOT a Facebook Place ID, so never
+  // reuse --location-id values here). On a multi-post thread the tag goes on
+  // the first post. On posts:update, pass the literal value null to remove
+  // the tag (the API clears on JSON null).
+  if (flags["threads-location-id"] !== undefined) {
+    const raw = flags["threads-location-id"] === true ? "" : String(flags["threads-location-id"]).trim();
+    body.threads = {
+      ...(body.threads || {}),
+      location_id: raw === "" || raw === "null" ? null : raw,
+    };
+  }
+
   // Google Business extras. The CTA button is the ONLY way to put a link or
   // phone number on a GBP post — captions reject both. Simple CTA + topic
   // type get their own flags; the JSON-heavy EVENT/OFFER shapes go through
@@ -384,7 +415,8 @@ function buildPostBody(flags) {
   }
 
   // Merge per-platform option objects (pinterest/youtube/instagram/tiktok/x),
-  // preserving any keys already set above (e.g. x.thread_parts).
+  // preserving any keys already set above (e.g. x.thread_parts,
+  // bluesky.thread_parts, mastodon.thread_parts, threads.thread_parts).
   const platformOpts = assemblePlatformOptions(flags);
   for (const [platform, opts] of Object.entries(platformOpts)) {
     body[platform] = { ...(body[platform] || {}), ...opts };
@@ -540,7 +572,10 @@ function formatMessage(msg, index) {
   if (msg.is_read === false) meta.push("unread");
   if (msg.is_replied) meta.push("replied");
   if (msg.reaction) meta.push(`reaction: ${msg.reaction}`);
+  // Threads replies only: true when hidden on Threads (flip with inbox:hide).
+  if (msg.hidden === true) meta.push("hidden on Threads");
   lines.push(`    ${meta.join("  ·  ")}`);
+  if (msg.permalink) lines.push(`    ${msg.permalink}`);
   return lines.join("\n");
 }
 
@@ -773,12 +808,15 @@ async function cmdPostsRecentPlatform(config, flags) {
 
 async function cmdPostsCreate(config, flags) {
   const text = flags.text;
-  if (!text) {
+  if (!text && !hasThreadFlag(flags)) {
     console.error("Usage: omnisocials posts:create --text \"...\" [--channels ...]");
     process.exit(1);
   }
 
   const body = buildPostBody(flags);
+  // Thread-only create: the API requires a content field but takes the
+  // caption from thread part 1, so send an empty default.
+  if (body.content === undefined) body.content = "";
 
   const result = await apiRequest(config, "POST", "/posts/create", body);
 
@@ -794,7 +832,7 @@ async function cmdPostsCreate(config, flags) {
 
 async function cmdPostsCreateAndPublish(config, flags) {
   const text = flags.text;
-  if (!text) {
+  if (!text && !hasThreadFlag(flags)) {
     console.error(
       "Usage: omnisocials posts:create-and-publish --text \"...\" [--channels ...]"
     );
@@ -802,6 +840,7 @@ async function cmdPostsCreateAndPublish(config, flags) {
   }
 
   const body = buildPostBody(flags);
+  if (body.content === undefined) body.content = "";
   // create-and-publish ignores scheduling; drop it if a stray --schedule slipped in.
   delete body.schedule_at;
 
@@ -1163,24 +1202,76 @@ async function cmdHashtagSetsDelete(config, flags, positional) {
   });
 }
 
-// --- Locations (Instagram place tagging) ---
+// --- Locations (Instagram or Threads place tagging) ---
+// --platform instagram (default) searches Facebook Places for Instagram tags;
+// --platform threads searches Threads locations (DIFFERENT id namespace; a
+// Facebook Place ID is not a Threads location id) and also accepts
+// --latitude/--longitude instead of a name. Threads location tagging is
+// rolling out; until Meta approves the permission the API answers
+// error.code = not_available.
 
 async function cmdLocationsSearch(config, flags, positional) {
+  const platform = String(flags.platform || "instagram").toLowerCase();
   const q = flags.q || positional.join(" ");
-  if (!q || q.trim().length < 2) {
+  const hasCoords = flags.latitude !== undefined && flags.longitude !== undefined;
+
+  if (platform === "threads" ? !hasCoords && (!q || q.trim().length < 2) : !q || q.trim().length < 2) {
     exitWithError(
-      'Usage: omnisocials locations:search "<place name>"  (min 2 chars; returns location_id values for Instagram posts)'
+      'Usage: omnisocials locations:search "<place name>" [--platform instagram|threads]\n' +
+        "       omnisocials locations:search --platform threads --latitude 34.1184 --longitude -118.3004\n" +
+        "(name min 2 chars; instagram returns location_id values, threads returns threads.location_id values)"
     );
   }
 
-  const result = await apiRequest(config, "GET", "/locations/search", undefined, { q });
+  const params = { platform };
+  if (q && q.trim()) params.q = q;
+  if (hasCoords) {
+    params.latitude = flags.latitude;
+    params.longitude = flags.longitude;
+  }
+
+  const label = q && q.trim() ? `"${q}"` : `${flags.latitude}, ${flags.longitude}`;
+  const result = await apiRequest(config, "GET", "/locations/search", undefined, params);
+
+  if (platform === "threads") {
+    // Threads answers { locations: [...] } (no `data` wrapper) or
+    // { error: { code, message } } with code not_available |
+    // threads_not_connected | threads_reauth_required | platform_error.
+    if (result.error) {
+      const err = result.error;
+      if (flags.json) {
+        outputJson(result);
+      } else {
+        console.error(`Error [${err.code || "error"}]: ${err.message || err}`);
+      }
+      process.exit(1);
+    }
+    if (flags.json) {
+      outputJson(result);
+      return;
+    }
+    const locations = Array.isArray(result.locations) ? result.locations : [];
+    if (!locations.length) {
+      console.log(`No Threads locations found for ${label}. Try a more specific place name.`);
+      return;
+    }
+    console.log(`Threads locations matching ${label} (${locations.length})`);
+    console.log("─".repeat(40));
+    for (const loc of locations) {
+      const bits = [loc.address, loc.city, loc.country].filter(Boolean).join(", ");
+      console.log(`threads.location_id: ${loc.id}  ${loc.name || ""}${bits ? `  (${bits})` : ""}`);
+    }
+    console.log("\nPass an id to posts:create/posts:update with --threads-location-id <id>.");
+    return;
+  }
+
   handleResult(result, flags, (data) => {
     const locations = Array.isArray(data) ? data : [];
     if (!locations.length) {
-      console.log(`No taggable locations found for "${q}". Try a more specific venue name.`);
+      console.log(`No taggable locations found for ${label}. Try a more specific venue name.`);
       return;
     }
-    console.log(`Locations matching "${q}" (${locations.length})`);
+    console.log(`Locations matching ${label} (${locations.length})`);
     console.log("─".repeat(40));
     for (const loc of locations) {
       console.log(`location_id: ${loc.id}  ${loc.name}${loc.address ? `  — ${loc.address}` : ""}`);
@@ -1660,6 +1751,36 @@ async function cmdInboxReply(config, flags, positional) {
   });
 }
 
+// Hide (or unhide with --unhide) a reply someone left on one of the user's
+// Threads posts, as the post owner. Threads only for now; only incoming
+// top-level replies can be hidden (nested replies return not_hideable).
+// Takes the message id from inbox:messages, NOT the conversation id.
+// Rolling out: until Meta approves the permission the API answers a clear 400.
+async function cmdInboxHide(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    console.error(
+      "Usage: omnisocials inbox:hide <message-id> [--unhide]  (Threads replies on your posts; id from inbox:messages)"
+    );
+    process.exit(1);
+  }
+
+  const result = await apiRequest(
+    config,
+    "POST",
+    `/inbox/messages/${encodeURIComponent(id)}/hide`,
+    { hide: !flags.unhide }
+  );
+
+  handleResult(result, flags, (data) => {
+    if (data && data.hidden === true) {
+      console.log(`Reply ${id} is now hidden on Threads.`);
+    } else {
+      console.log(`Reply ${id} is now visible on Threads again.`);
+    }
+  });
+}
+
 // --- Webhooks ---
 
 async function cmdWebhooksList(config, flags) {
@@ -1820,7 +1941,7 @@ HASHTAG SETS
   hashtag-sets:delete <id>       Delete a set (existing posts keep their tags)
 
 LOCATIONS
-  locations:search "<name>"      Find Instagram location_id values for a place
+  locations:search "<name>"      Find location ids for a place [--platform instagram|threads --latitude --longitude]
 
 AUDIO
   audio:search ["<song/artist>"] Instagram Reel music from Meta's licensed catalog; no query = trending [--type music|original_sound]
@@ -1841,6 +1962,7 @@ INBOX (Social Inbox — needs the opt-in inbox:read / inbox:write scopes)
   inbox:messages <conv-id>       Full message history for one conversation [--limit --cursor]
   inbox:read <conv-id>           Mark a conversation's messages as read (inbox:write)
   inbox:reply <conv-id>          Reply to a conversation [--text (required) --attachment-url --attachment-type] (inbox:write)
+  inbox:hide <message-id>        Hide a reply on your Threads post; --unhide reverses it (Threads only, rolling out) (inbox:write)
 
 WEBHOOKS
   webhooks:list                  List webhooks
@@ -1867,11 +1989,13 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --hashtag-placement <mode>     caption_append (default) or first_comment
   --hashtag-platforms <a,b>      Only apply the set to these channels
   --location-id <id>             Instagram place tag (from locations:search)
+  --threads-location-id <id>     Threads place tag (from locations:search --platform threads; "null" clears on update)
   --collaborators <a,b>          Instagram co-author usernames (max 3)
   --user-tags '<json>'           Instagram photo tags, JSON array [{"username","x","y","image_index?"}]
   --x-thread "a || b || c"       Post an X thread; parts split on "||"
   --bluesky-thread "a || b || c" Post a Bluesky thread; parts split on "||"
   --mastodon-thread "a || b || c" Post a Mastodon thread; parts split on "||"
+  --threads-thread "a || b || c" Post a Threads (Meta) thread; parts split on "||"
 
 PLATFORM FLAGS
   --pinterest-board-id           Pinterest board ID (required for Pinterest)
@@ -1968,6 +2092,7 @@ const COMMANDS = {
   "inbox:messages": { handler: cmdInboxMessages },
   "inbox:read": { handler: cmdInboxMarkRead },
   "inbox:reply": { handler: cmdInboxReply },
+  "inbox:hide": { handler: cmdInboxHide },
   "webhooks:list": { handler: cmdWebhooksList },
   "webhooks:create": { handler: cmdWebhooksCreate },
   "webhooks:get": { handler: cmdWebhooksGet },
