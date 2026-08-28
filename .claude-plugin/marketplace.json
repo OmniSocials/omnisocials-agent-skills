@@ -1,6 +1,6 @@
 {
   "name": "omnisocials-skills",
-  "version": "1.2.3",
+  "version": "1.2.4",
   "description": "OmniSocials plugins for managing social media across 11 platforms from your IDE or terminal.",
   "owner": { "name": "OmniSocials" },
   "plugins": [

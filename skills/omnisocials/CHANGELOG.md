@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.22.0 (2026-08-29)
+
+### Added
+- **YouTube in the Social Inbox.** The inbox commands now cover YouTube video comments: `inbox:list --platform youtube` lists comments on your YouTube videos, and `inbox:messages`, `inbox:read`, and `inbox:reply` work on those conversations like any other platform. YouTube is video comments only (no DMs or mentions). YouTube has no comment webhooks, so each channel is checked for new comments once per day; a new comment can take up to a day to appear. Same opt-in `inbox:read` / `inbox:write` scopes as the rest of the inbox.
+
 ## 1.21.0 (2026-08-23)
 
 ### Added
