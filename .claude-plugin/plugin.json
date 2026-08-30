@@ -1,7 +1,7 @@
 {
   "name": "omnisocials",
-  "version": "1.11.0",
-  "description": "Manage social media across 11 platforms — create, schedule, and publish posts, stories, and reels, upload media, read and reply to your social inbox, track analytics, and configure webhooks via the OmniSocials API.",
+  "version": "1.12.0",
+  "description": "Manage social media across 11 platforms: create, schedule, and publish posts, stories, and reels, upload media, read and reply to your social inbox, track analytics, and configure webhooks via the OmniSocials API.",
   "author": {
     "name": "OmniSocials",
     "url": "https://omnisocials.com"

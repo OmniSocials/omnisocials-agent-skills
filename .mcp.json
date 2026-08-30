@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "omnisocials": {
+      "type": "http",
+      "url": "https://mcp.omnisocials.com"
+    }
+  }
+}

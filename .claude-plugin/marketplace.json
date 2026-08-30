@@ -6,7 +6,7 @@
   "plugins": [
     {
       "name": "omnisocials",
-      "description": "Manage social media across 11 platforms — create posts, stories, reels, threads, upload media, organize folders, view analytics, and configure webhooks.",
+      "description": "Manage social media across 11 platforms: create posts, stories, reels, threads, upload media, organize folders, view analytics, and configure webhooks.",
       "source": "./"
     }
   ]

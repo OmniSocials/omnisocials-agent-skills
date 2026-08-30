@@ -80,6 +80,24 @@ claude mcp add omnisocials -- npx -y @omnisocials/mcp-server
 
 See [@omnisocials/mcp-server on npm](https://www.npmjs.com/package/@omnisocials/mcp-server) for details.
 
+## Grok Build / Grok Bot
+
+This repo is also an installable plugin for Grok Build. It bundles the skill plus the hosted OmniSocials MCP server.
+
+1. In Grok Build, run `/plugin` and search for **omnisocials**. Or install directly from this repo URL.
+2. On first use, an authorize card appears. Sign in to OmniSocials and approve the workspaces Grok can access.
+
+The MCP connection uses OAuth. No API key is needed for it.
+
+## Network endpoints and credentials
+
+For transparency and security review, this plugin only calls OmniSocials services:
+
+- `https://api.omnisocials.com/v1` (skill CLI; authenticated with the OmniSocials API key you provide during setup, stored in your local config)
+- `https://mcp.omnisocials.com` (hosted MCP server; OAuth 2.1 sign-in, no key stored by the plugin)
+
+The plugin sends no telemetry and reads no credentials other than its own API key.
+
 ## Links
 
 - [OmniSocials](https://omnisocials.com)
