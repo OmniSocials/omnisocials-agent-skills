@@ -113,6 +113,37 @@ describe("CLI basics", () => {
     expect(stderr).toContain("Usage:");
   });
 
+  it("help lists posts:approve and posts:reject", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("posts:approve <id>");
+    expect(stdout).toContain("posts:reject <id>");
+  });
+
+  it("posts:approve requires an id", async () => {
+    const { stderr, exitCode } = await run([
+      "posts:approve",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("posts:reject requires an id", async () => {
+    const { stderr, exitCode } = await run([
+      "posts:reject",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
   it("media:upload requires --url", async () => {
     const { stderr, exitCode } = await run([
       "media:upload",

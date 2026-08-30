@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.23.0 (2026-08-30)
+
+### Added
+- **Write access to approvals.** New commands `posts:approve <id>` and `posts:reject <id> [--comment "..."]`. Both act on the CURRENT step of a post's approval workflow (`approval_status: "pending"`, post `status: "in_approval"`) on behalf of the connected API key's owner, who must be a listed approver for that step — steps approve in order, so being an approver on a later step returns `forbidden` until earlier steps clear. Approving the last step finalizes the post immediately (`scheduled` or `posting`); rejecting stops the WHOLE workflow immediately, not just the current step. `--comment` on reject is optional and shown to the requester and other approvers. Previously `approval_status` was read-only, visible only via `posts:list` / `posts:get`.
+
 ## 1.22.0 (2026-08-29)
 
 ### Added

@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.22.0";
+const VERSION = "1.23.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -913,6 +913,53 @@ async function cmdPostsRetry(config, flags, positional) {
     console.log(
       "Platforms that already succeeded are never re-published; poll posts:get for the outcome."
     );
+  });
+}
+
+async function cmdPostsApprove(config, flags, positional) {
+  // Approves the CURRENT step of a post's approval workflow, on behalf of
+  // the connected API key's owner. That user must be a listed approver for
+  // the current step — steps approve in order, so an approver on a later
+  // step gets a 403 forbidden error until earlier steps clear. Only works
+  // on a post with approval_status "pending". If this is the last step, the
+  // post finalizes immediately (scheduled or posting); otherwise it stays
+  // in_approval and the next step's approvers are notified.
+  const id = positional[0];
+  if (!id) {
+    console.error("Usage: omnisocials posts:approve <id>");
+    process.exit(1);
+  }
+
+  const result = await apiRequest(config, "POST", `/posts/${id}/approve`);
+
+  handleResult(result, flags, (data) => {
+    console.log(`Approved!`);
+    console.log(`ID: ${data.id}`);
+    console.log(`Status: ${data.status}`);
+    console.log(`Approval status: ${data.approval_status}`);
+    if (data.message) console.log(data.message);
+  });
+}
+
+async function cmdPostsReject(config, flags, positional) {
+  // Rejects a post's approval workflow, stopping the WHOLE workflow
+  // immediately (not just the current step). Same approver requirement as
+  // posts:approve. --comment is optional and, when given, is shown to the
+  // requester and other approvers in the post's review thread.
+  const id = positional[0];
+  if (!id) {
+    console.error('Usage: omnisocials posts:reject <id> [--comment "..."]');
+    process.exit(1);
+  }
+
+  const body = flags.comment ? { comment: flags.comment } : undefined;
+  const result = await apiRequest(config, "POST", `/posts/${id}/reject`, body);
+
+  handleResult(result, flags, (data) => {
+    console.log(`Rejected.`);
+    console.log(`ID: ${data.id}`);
+    console.log(`Status: ${data.status}`);
+    if (data.message) console.log(data.message);
   });
 }
 
@@ -1920,6 +1967,8 @@ POSTS
   posts:update <id>              Update a draft/scheduled post
   posts:publish <id>             Publish a post now (refuses failed posts; use posts:retry)
   posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
+  posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step)
+  posts:reject <id>              Reject a post's approval workflow, stopping it immediately [--comment "..."]
   posts:delete <id>              Delete a post
 
 MEDIA
@@ -2067,6 +2116,8 @@ const COMMANDS = {
   "posts:update": { handler: cmdPostsUpdate },
   "posts:publish": { handler: cmdPostsPublish },
   "posts:retry": { handler: cmdPostsRetry },
+  "posts:approve": { handler: cmdPostsApprove },
+  "posts:reject": { handler: cmdPostsReject },
   "posts:delete": { handler: cmdPostsDelete },
   "media:list": { handler: cmdMediaList },
   "media:upload": { handler: cmdMediaUpload },

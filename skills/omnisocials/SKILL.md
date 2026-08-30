@@ -84,6 +84,7 @@ IMPORTANT: Follow these rules at all times.
 | "Delete that post" | Confirm with user, then `posts:delete <id>` |
 | "Publish my draft" | Confirm with user, then `posts:publish <id>` |
 | "Retry my failed post" | `posts:list --status failed` to find it, then `posts:retry <id>` (retries only the failed platforms; check `posts:get` for the outcome). Note: `posts:publish` refuses failed posts; retry is the correct command |
+| "Approve/reject that pending post" | `posts:list --status in_approval` to find it, then `posts:approve <id>` or `posts:reject <id> --comment "..."`. Only works if the connected user is a listed approver for the post's current workflow step (returns `forbidden` otherwise) |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
 
 ## Workflow
@@ -133,6 +134,8 @@ Follow this workflow when creating posts:
 | `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create`. `--schedule` on a post pending approval (`in_approval`) moves only the time and does not change its status |
 | `posts:publish <id>` | Publish a draft/scheduled post now. Refuses posts whose status is `failed` or `warning`; use `posts:retry` for those |
 | `posts:retry <id>` | Retry the failed platforms of a failed or partially failed post; succeeded platforms are never re-published; async, max 3 retries per platform. The response means the retry is queued: poll `posts:get` for the outcome. After 3 retries on a platform the API returns `max_retries_reached` and the post must be recreated. Post responses carry `retry_of` (the failed post this one retries) and `retries` (retry posts created from this one); a `published` post with empty `published_urls` and `retries` set is a resolved failure whose live URLs are on the retry post |
+| `posts:approve <id>` | Approve the current step of a post's approval workflow (`approval_status: "pending"`, post `status: "in_approval"`). The connected user must be a listed approver for the CURRENT step — steps approve in order, so being an approver on a later step returns `forbidden` until earlier steps clear. If this is the last step, the post finalizes immediately (`scheduled` or `posting`); otherwise it stays `in_approval` and the next step's approvers are notified |
+| `posts:reject <id>` | Reject a post's approval workflow. Same approver requirement as `posts:approve`. Unlike approval, this stops the WHOLE workflow immediately (not just the current step) — the post becomes `rejected`. Flag: `--comment "..."` (optional, shown to the requester and other approvers) |
 | `posts:delete <id>` | Delete a post (cannot be undone) |
 
 ### Media

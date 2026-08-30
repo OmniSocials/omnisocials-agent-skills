@@ -48,7 +48,7 @@ Ask your AI agent things like:
 | Category | Commands |
 |----------|----------|
 | **Setup** | `setup`, `config:show` |
-| **Posts** | `posts:list`, `posts:get`, `posts:recent-platform`, `posts:create`, `posts:create-and-publish`, `posts:update`, `posts:publish`, `posts:retry`, `posts:delete` |
+| **Posts** | `posts:list`, `posts:get`, `posts:recent-platform`, `posts:create`, `posts:create-and-publish`, `posts:update`, `posts:publish`, `posts:retry`, `posts:approve`, `posts:reject`, `posts:delete` |
 | **Media** | `media:list`, `media:upload`, `media:upload-base64`, `media:check`, `media:delete` |
 | **Folders** | `folders:list`, `folders:create` |
 | **Hashtag sets** | `hashtag-sets:list`, `hashtag-sets:create`, `hashtag-sets:update`, `hashtag-sets:delete` |
