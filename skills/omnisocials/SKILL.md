@@ -328,6 +328,7 @@ omnisocials posts:create \
 #### TikTok
 | Flag | Description |
 |---|---|
+| `--tiktok-title` | Photo carousels only. The title TikTok shows above the caption on Photo Mode posts (max 90 chars). TikTok takes the title and the caption as separate fields; the caption comes from `--text`. Ignored on video posts. `posts:get` returns it as `tiktok.title` |
 | `--tiktok-privacy` | Privacy: `PUBLIC_TO_EVERYONE`, `MUTUAL_FOLLOW_FRIENDS`, `FOLLOWER_OF_CREATOR`, `SELF_ONLY` |
 | `--tiktok-disable-comment` | Disable comments |
 | `--tiktok-disable-duet` | Disable duets |

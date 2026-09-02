@@ -101,6 +101,12 @@ describe("CLI basics", () => {
     expect(stdout).toContain("posts:retry <id>");
   });
 
+  it("help lists --tiktok-title", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("--tiktok-title");
+  });
+
   it("posts:retry requires an id", async () => {
     const { stderr, exitCode } = await run([
       "posts:retry",

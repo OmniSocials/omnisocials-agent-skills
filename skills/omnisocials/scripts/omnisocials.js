@@ -231,6 +231,9 @@ function assemblePlatformOptions(flags) {
       "linkedin-page-carousel-as-images": { key: "carousel_as_images", transform: (v) => v === true || v === "true" },
     },
     tiktok: {
+      // Photo carousels only: the Photo Mode title TikTok shows above the
+      // caption (max 90 chars). Video posts have one caption field; ignored there.
+      "tiktok-title": "title",
       "tiktok-privacy": "privacy_level",
       "tiktok-disable-comment": { key: "disable_comment", transform: (v) => v === true || v === "true" },
       "tiktok-disable-duet": { key: "disable_duet", transform: (v) => v === true || v === "true" },
@@ -2074,6 +2077,7 @@ PLATFORM FLAGS
   --linkedin-carousel-as-images  true = post the profile post's 2+ images as a plain image gallery instead of the default swipeable PDF document carousel (false on posts:update reverts)
   --linkedin-page-carousel-as-images  Same as above for the company page post
   --linkedin-poll-json '<json>'  Non-sponsored LinkedIn poll(s), independent per channel: {"linkedin":{"question","options":[2-4],"duration":"ONE_DAY|THREE_DAYS|SEVEN_DAYS|FOURTEEN_DAYS"},"linkedin_page":{...}}. Mutually exclusive with media/link-share on that channel. A channel key set to null (or the whole flag as 'null') on posts:update clears it.
+  --tiktok-title                 TikTok photo carousel title (max 90 chars; shown above the caption on Photo Mode posts; ignored on video)
   --tiktok-privacy               TikTok privacy level
   --tiktok-disable-comment       Disable TikTok comments
   --tiktok-disable-duet          Disable TikTok duets

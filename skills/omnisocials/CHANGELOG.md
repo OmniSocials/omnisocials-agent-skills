@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.24.0 (2026-09-02)
+
+### Added
+- **TikTok photo carousel title.** New `--tiktok-title` flag on `posts:create` / `posts:update` sets the title TikTok shows above the caption on Photo Mode posts (max 90 characters; longer returns `400 validation_error`). TikTok takes the title and the caption as two separate fields, so photo posts created through the CLI used to publish with an empty title. Ignored on video posts, which have a single caption field. `posts:get` returns it as `tiktok.title`.
+
 ## 1.23.0 (2026-08-30)
 
 ### Added
