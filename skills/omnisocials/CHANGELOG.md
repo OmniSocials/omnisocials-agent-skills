@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.25.0 (2026-09-06)
+
+### Added
+- **Submit posts for approval.** New `approval-workflows:list` command lists the workspace's approval workflows (id, steps, named approvers; workflows are created in the dashboard under Approvals). New `--approval-workflow <id>` flag on `posts:create` routes the post through one: it is created as `in_approval` instead of `scheduled`, the approvers are notified, and it publishes at `--schedule` once the workflow's last step approves it (Approvals page, or `posts:approve`). Requires `--schedule`; not allowed with `--publish-now`. Errors: `404 workflow_not_found`, `400 validation_error`.
+- **`posts:get` shows every platform option.** The TikTok block (title, privacy, cover frame `video_cover_timestamp_ms`, comment/duet/stitch toggles, disclosures), YouTube (title, privacy, tags) and Pinterest (board, title, link) options were already in the API response and are unchanged; this release only documents that they are there.
+
 ## 1.24.0 (2026-09-02)
 
 ### Added

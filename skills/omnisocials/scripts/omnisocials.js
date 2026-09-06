@@ -299,6 +299,10 @@ function buildPostBody(flags) {
   if (flags["hashtag-placement"]) body.hashtag_placement = flags["hashtag-placement"];
   if (flags["hashtag-platforms"]) body.hashtag_platforms = splitComma(flags["hashtag-platforms"]);
 
+  // Approval workflow — top-level; the post is created as in_approval and
+  // publishes at --schedule once the workflow's last step approves it.
+  if (flags["approval-workflow"]) body.approval_workflow_id = String(flags["approval-workflow"]);
+
   // Instagram extras — top-level (not nested under `instagram`).
   if (flags["location-id"]) body.location_id = flags["location-id"];
   if (flags.collaborators) body.collaborators = splitComma(flags.collaborators);
@@ -1178,6 +1182,32 @@ async function cmdFoldersCreate(config, flags) {
   });
 }
 
+// --- Approval workflows ---
+
+async function cmdApprovalWorkflowsList(config, flags) {
+  const result = await apiRequest(config, "GET", "/approval-workflows");
+  handleResult(result, flags, (data) => {
+    const workflows = Array.isArray(data) ? data : [];
+    if (!workflows.length) {
+      console.log(
+        "No approval workflows found. Create one in the OmniSocials dashboard under Approvals, then use posts:create --approval-workflow <id>."
+      );
+      return;
+    }
+    console.log(`Approval workflows (${workflows.length})`);
+    console.log("─".repeat(40));
+    for (const w of workflows) {
+      console.log(`ID: ${w.id}  ${w.name}${w.workspace_id ? "" : "  (company-wide)"}`);
+      for (const s of w.steps || []) {
+        const approvers = (s.approvers || []).map((a) => a.name || a.email || a.id).join(", ") || "(no approvers)";
+        console.log(`  Step ${s.order}: ${s.name || "Review"} [${s.require_mode === "all" ? "all must approve" : "any one approves"}]: ${approvers}`);
+      }
+    }
+    console.log("");
+    console.log("Submit a post for review with: posts:create ... --schedule <ISO8601> --approval-workflow <id>");
+  });
+}
+
 // --- Hashtag sets ---
 
 async function cmdHashtagSetsList(config, flags) {
@@ -1986,6 +2016,9 @@ FOLDERS
   folders:list                   List media folders
   folders:create                 Create a folder [--name --parent-id]
 
+APPROVAL WORKFLOWS
+  approval-workflows:list        List the workspace's approval workflows (id, steps, approvers); pass an id to posts:create --approval-workflow
+
 HASHTAG SETS
   hashtag-sets:list              List saved hashtag sets (id, name, tags)
   hashtag-sets:create            Save a reusable set [--name --tags "#a #b #c"]
@@ -2040,6 +2073,7 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --hashtag-set <name>           Apply a saved hashtag set by name (see hashtag-sets:list)
   --hashtag-placement <mode>     caption_append (default) or first_comment
   --hashtag-platforms <a,b>      Only apply the set to these channels
+  --approval-workflow <id>       Hold the post for review in this approval workflow (see approval-workflows:list); needs --schedule
   --location-id <id>             Instagram place tag (from locations:search)
   --threads-location-id <id>     Threads place tag (from locations:search --platform threads; "null" clears on update)
   --collaborators <a,b>          Instagram co-author usernames (max 3)
@@ -2130,6 +2164,7 @@ const COMMANDS = {
   "media:delete": { handler: cmdMediaDelete },
   "folders:list": { handler: cmdFoldersList },
   "folders:create": { handler: cmdFoldersCreate },
+  "approval-workflows:list": { handler: cmdApprovalWorkflowsList },
   "hashtag-sets:list": { handler: cmdHashtagSetsList },
   "hashtag-sets:create": { handler: cmdHashtagSetsCreate },
   "hashtag-sets:update": { handler: cmdHashtagSetsUpdate },
