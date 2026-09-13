@@ -55,7 +55,7 @@ Ask your AI agent things like:
 | **Accounts** | `accounts:list`, `accounts:get` |
 | **Locations & audio** | `locations:search`, `audio:search` |
 | **Analytics** | `analytics:post`, `analytics:posts`, `analytics:overview`, `analytics:accounts`, `analytics:best-times` |
-| **Inbox** | `inbox:list`, `inbox:messages`, `inbox:read`, `inbox:reply` |
+| **Inbox** | `inbox:list`, `inbox:next`, `inbox:messages`, `inbox:read`, `inbox:reply`, `inbox:hide`, `inbox:delete` |
 | **Webhooks** | `webhooks:list`, `webhooks:create`, `webhooks:get`, `webhooks:update`, `webhooks:delete`, `webhooks:rotate-secret` |
 
 ## Features

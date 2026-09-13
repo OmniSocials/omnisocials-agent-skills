@@ -4,6 +4,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import os from "node:os";
 import fs from "node:fs";
+import http from "node:http";
 
 const exec = promisify(execFile);
 const CLI = path.resolve(__dirname, "../scripts/omnisocials.js");
@@ -33,6 +34,34 @@ function run(args, { env } = {}) {
     (err) => ({ stdout: err.stdout || "", stderr: err.stderr || "", exitCode: err.code })
   );
 }
+
+// A throwaway HTTP server standing in for the API. `handler(req, body)` returns
+// { status, json }; every request is recorded in `calls` so tests can assert on
+// the method, path, query string, and JSON body the CLI sent.
+async function withMockServer(handler, fn) {
+  const calls = [];
+  const server = http.createServer((req, res) => {
+    let raw = "";
+    req.on("data", (chunk) => (raw += chunk));
+    req.on("end", () => {
+      const body = raw ? JSON.parse(raw) : null;
+      const url = new URL(req.url, "http://127.0.0.1");
+      calls.push({ method: req.method, path: url.pathname, query: url.searchParams, body });
+      const reply = handler(req, body) || { status: 200, json: { data: null } };
+      res.writeHead(reply.status || 200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify(reply.json));
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const baseUrl = `http://127.0.0.1:${server.address().port}`;
+  try {
+    return await fn(baseUrl, calls);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+}
+
+const MOCK_KEY = ["omsk", "test", "mock"].join("_");
 
 describe("CLI basics", () => {
   it("shows help with --help", async () => {
@@ -293,6 +322,398 @@ describe("Inbox commands", () => {
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("API key not found");
     expect(stderr).not.toContain("Unknown command");
+  });
+
+  it("help lists inbox:next, inbox:delete, --unanswered and --next", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("inbox:next");
+    expect(stdout).toContain("inbox:delete <message-id>");
+    expect(stdout).toContain("--unanswered");
+    expect(stdout).toContain("--include-read --exclude");
+    expect(stdout).toContain("--attachment-type --next]");
+  });
+
+  it("inbox:next is a known command (requires an API key)", async () => {
+    const { stderr, exitCode } = await run(["inbox:next"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("API key not found");
+    expect(stderr).not.toContain("Unknown command");
+  });
+
+  it("inbox:next rejects an unknown --order", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:next",
+      "--order",
+      "sideways",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+    expect(stderr).toContain("oldest|newest");
+  });
+
+  it("inbox:delete requires a message id", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:delete",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+    expect(stderr).toContain("cannot be undone");
+  });
+
+  it("inbox:delete is a known command (requires an API key)", async () => {
+    const { stderr, exitCode } = await run(["inbox:delete", "123"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("API key not found");
+    expect(stderr).not.toContain("Unknown command");
+  });
+});
+
+// Fixtures in the public API's response shape (see GET /inbox/next).
+const POST = {
+  id: "17912345678901234",
+  caption: "Summer drop is live",
+  thumbnail: "https://cdn.example.com/p1.jpg",
+  url: "https://www.instagram.com/p/abc123/",
+  media_type: "IMAGE",
+};
+const SENDER = { id: "u1", name: "Jane Doe", username: "janedoe", profile_picture: null };
+function msg(overrides) {
+  return {
+    id: "42",
+    conversation_id: "ig_comment_18001",
+    platform: "instagram",
+    type: "comment",
+    direction: "incoming",
+    text: "Where can I buy this?",
+    timestamp: "2026-09-06T10:00:00.000Z",
+    is_read: false,
+    is_replied: false,
+    reaction: null,
+    parent_comment_id: null,
+    hidden: false,
+    permalink: null,
+    attachment: null,
+    sender: SENDER,
+    post: POST,
+    ...overrides,
+  };
+}
+const EARLIER = msg({
+  id: "41",
+  text: "Love it!",
+  timestamp: "2026-09-05T09:00:00.000Z",
+  is_read: true,
+  is_replied: true,
+});
+const TARGET = msg();
+const NEXT_ITEM = {
+  conversation: {
+    conversation_id: "ig_comment_18001",
+    platform: "instagram",
+    type: "comment",
+    participant: SENDER,
+    unread_count: 1,
+    last_message: {
+      id: "42",
+      direction: "incoming",
+      text: TARGET.text,
+      timestamp: TARGET.timestamp,
+      is_read: false,
+    },
+    post: POST,
+  },
+  message: TARGET,
+  messages: [EARLIER, TARGET],
+};
+
+describe("Inbox work queue (mock API)", () => {
+  it("inbox:list --unanswered sends unanswered=true", async () => {
+    await withMockServer(
+      () => ({ json: { data: [], pagination: { has_more: false } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:list",
+          "--unanswered",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("No conversations found.");
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/inbox/conversations");
+        expect(calls[0].query.get("unanswered")).toBe("true");
+      }
+    );
+  });
+
+  it("inbox:next prints the empty-queue line when data is null", async () => {
+    await withMockServer(
+      () => ({ json: { data: null, remaining: 0 } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:next",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout.trim()).toBe("Nothing is waiting for an answer.");
+        expect(calls[0].path).toBe("/inbox/next");
+      }
+    );
+  });
+
+  it("inbox:next passes its flags through and prints the item, post, thread and count", async () => {
+    await withMockServer(
+      () => ({ json: { data: NEXT_ITEM, remaining: 3 } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:next",
+          "--platform",
+          "instagram",
+          "--type",
+          "comment",
+          "--order",
+          "newest",
+          "--include-read",
+          "--exclude",
+          "ig_dm_1, fb_dm_2",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        const q = calls[0].query;
+        expect(q.get("platform")).toBe("instagram");
+        expect(q.get("type")).toBe("comment");
+        expect(q.get("order")).toBe("newest");
+        expect(q.get("include_read")).toBe("true");
+        expect(q.get("exclude")).toBe("ig_dm_1,fb_dm_2");
+
+        expect(stdout).toContain("Next up: instagram comment from Jane Doe (@janedoe)");
+        expect(stdout).toContain("Conversation: ig_comment_18001");
+        expect(stdout).toContain("Message to answer: 42");
+        expect(stdout).toContain("On post: 17912345678901234  (IMAGE)");
+        expect(stdout).toContain("Caption: Summer drop is live");
+        expect(stdout).toContain("URL: https://www.instagram.com/p/abc123/");
+        expect(stdout).toContain("Thumbnail: https://cdn.example.com/p1.jpg");
+        expect(stdout).toContain("Thread (oldest first)");
+        expect(stdout.indexOf("id: 41")).toBeLessThan(stdout.indexOf("id: 42"));
+        expect(stdout).toContain("^ answer this one");
+        expect(stdout).toContain("3 more waiting.");
+        expect(stdout).toContain('inbox:reply "ig_comment_18001" --text "..." --next');
+        expect(stdout).toContain('inbox:read "ig_comment_18001"');
+        expect(stdout).toContain("inbox:hide 42 / inbox:delete 42");
+      }
+    );
+  });
+
+  it("inbox:next leaves hide/delete out of the hint for DMs", async () => {
+    const dm = msg({ type: "dm", conversation_id: "ig_dm_7", post: null });
+    const item = {
+      conversation: { ...NEXT_ITEM.conversation, conversation_id: "ig_dm_7", type: "dm", post: null },
+      message: dm,
+      messages: [dm],
+    };
+    await withMockServer(
+      () => ({ json: { data: item, remaining: 0 } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:next",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Next up: instagram dm from Jane Doe");
+        expect(stdout).not.toContain("On post:");
+        expect(stdout).not.toContain("inbox:hide");
+        expect(stdout).toContain("0 more waiting.");
+      }
+    );
+  });
+
+  it("inbox:reply --next sends include_next and prints the next item after the confirmation", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: { id: "99", timestamp: "2026-09-06T11:00:00.000Z" },
+          next: NEXT_ITEM,
+          remaining: 1,
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:reply",
+          "fb_dm_555",
+          "--text",
+          "On it!",
+          "--next",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/inbox/conversations/fb_dm_555/reply");
+        expect(calls[0].body).toEqual({ text: "On it!", include_next: true });
+        expect(stdout).toContain("Reply sent!");
+        expect(stdout).toContain("Message ID: 99");
+        expect(stdout.indexOf("Reply sent!")).toBeLessThan(stdout.indexOf("Next up:"));
+        expect(stdout).toContain("Conversation: ig_comment_18001");
+        expect(stdout).toContain("1 more waiting.");
+      }
+    );
+  });
+
+  it("inbox:reply without --next does not send include_next", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "99" } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:reply",
+          "fb_dm_555",
+          "--text",
+          "On it!",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({ text: "On it!" });
+        expect(stdout).not.toContain("Next up:");
+        expect(stdout).not.toContain("Nothing is waiting");
+      }
+    );
+  });
+
+  it("inbox:messages prints the post block before a comment thread", async () => {
+    await withMockServer(
+      () => ({ json: { data: [EARLIER, TARGET], pagination: { has_more: false } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:messages",
+          "ig_comment_18001",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/inbox/conversations/ig_comment_18001/messages");
+        expect(stdout.indexOf("On post: 17912345678901234")).toBeLessThan(stdout.indexOf("Messages (2)"));
+        expect(stdout).toContain("URL: https://www.instagram.com/p/abc123/");
+        expect(stdout).toContain("id: 41");
+        expect(stdout).toContain("id: 42");
+      }
+    );
+  });
+
+  it("inbox:messages shows 'hidden' on a hidden comment", async () => {
+    await withMockServer(
+      () => ({ json: { data: [msg({ hidden: true, platform: "facebook" })] } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:messages",
+          "fb_comment_1",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("hidden");
+        expect(stdout).not.toContain("hidden on Threads");
+      }
+    );
+  });
+
+  it("inbox:hide names the platform from the response", async () => {
+    await withMockServer(
+      () => ({ json: { data: msg({ hidden: true, platform: "youtube" }) } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:hide",
+          "42",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/inbox/messages/42/hide");
+        expect(calls[0].body).toEqual({ hide: true });
+        expect(stdout).toContain("Comment 42 is now hidden on youtube.");
+      }
+    );
+  });
+
+  it("inbox:delete sends DELETE and prints what was removed", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: { id: "42", conversation_id: "fb_comment_1", removed_reply_ids: ["43", "44"] },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:delete",
+          "42",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("DELETE");
+        expect(calls[0].path).toBe("/inbox/messages/42");
+        expect(stdout).toContain("Comment 42 deleted from the platform.");
+        expect(stdout).toContain("Conversation: fb_comment_1");
+        expect(stdout).toContain("Also removed 2 replies under it: 43, 44");
+      }
+    );
+  });
+
+  it("inbox:delete relays the API error envelope", async () => {
+    await withMockServer(
+      () => ({
+        status: 400,
+        json: {
+          error: {
+            code: "unsupported_platform",
+            message: "Only incoming Facebook, Instagram and TikTok comments can be deleted.",
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "inbox:delete",
+          "42",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [unsupported_platform]");
+      }
+    );
   });
 });
 

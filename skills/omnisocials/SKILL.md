@@ -74,10 +74,12 @@ IMPORTANT: Follow these rules at all times.
 | "Tag a location on Threads" | `locations:search "<place name>" --platform threads`, then `posts:create ... --threads-location-id <id>` (rolling out) |
 | "Post a reel with music" | `audio:search "<song or artist>"` (no query = trending), then `posts:create ... --type reel --instagram-audio-id <id>` |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
-| "Any new DMs / comments?" | `inbox:list --unread` (add `--platform` / `--type dm\|comment\|mention` to filter) — needs the `inbox:read` scope |
-| "Reply to that message" | `inbox:messages <conversation-id>` to read the thread, then `inbox:reply <conversation-id> --text "..."` — needs `inbox:write` |
-| "Mark that conversation read" | `inbox:read <conversation-id>` — needs `inbox:write` |
-| "Hide that Threads reply" | `inbox:hide <message-id>` (message id from `inbox:messages`; `--unhide` reverses; needs `inbox:write`) |
+| "Any new DMs / comments?" | `inbox:list --unread` (add `--platform` / `--type dm\|comment\|mention` to filter; `--unanswered` for only the ones still waiting for a reply). Needs the `inbox:read` scope |
+| "Work through what needs answering" / "Answer my inbox" | The `inbox:next` loop: `inbox:next` hands you the oldest unanswered item with its thread and the post it is on; draft a reply from that and send it with `inbox:reply <conversation-id> --text "..." --next`, whose response already carries the next item. Skip one for good with `inbox:read <conversation-id>`, skip it for this call only with `--exclude <conversation-id>`. Stops when it prints "Nothing is waiting for an answer." Needs `inbox:read` (+ `inbox:write` to reply) |
+| "Reply to that message" | `inbox:messages <conversation-id>` to read the thread, then `inbox:reply <conversation-id> --text "..."`. Needs `inbox:write` |
+| "Mark that conversation read" | `inbox:read <conversation-id>`. Needs `inbox:write` |
+| "Hide that comment" | `inbox:hide <message-id>` (message id from `inbox:messages` or `inbox:next`; Facebook, Instagram, TikTok, YouTube, Threads; `--unhide` reverses; needs `inbox:write`) |
+| "Delete that comment" | `inbox:delete <message-id>` (Facebook, Instagram, TikTok comments; cannot be undone, so confirm with the user first; YouTube: use `inbox:hide`; needs `inbox:write`) |
 | "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
 | "Add my usual hashtags" | `hashtag-sets:list` to find the set, then `posts:create ... --hashtag-set "<name>"` (add `--hashtag-placement first_comment` to keep tags out of the caption) |
 | "Save these hashtags for reuse" | `hashtag-sets:create --name "Brand" --tags "#a #b #c"` |
@@ -138,7 +140,7 @@ Follow this workflow when creating posts:
 | `posts:approve <id>` | Approve the current step of a post's approval workflow (`approval_status: "pending"`, post `status: "in_approval"`). The connected user must be a listed approver for the CURRENT step — steps approve in order, so being an approver on a later step returns `forbidden` until earlier steps clear. If this is the last step, the post finalizes immediately (`scheduled` or `posting`); otherwise it stays `in_approval` and the next step's approvers are notified |
 | `posts:reject <id>` | Reject a post's approval workflow. Same approver requirement as `posts:approve`. Unlike approval, this stops the WHOLE workflow immediately (not just the current step) — the post becomes `rejected`. Flag: `--comment "..."` (optional, shown to the requester and other approvers) |
 | `approval-workflows:list` | List the approval workflows this workspace can use (id, name, steps with named approvers; `workspace_id` null = company-wide). Workflows are created in the dashboard (Approvals). Pass an id to `posts:create --approval-workflow <id>` (requires `--schedule`, not allowed with `--publish-now`): the post is created as `in_approval`, approvers are notified, and it publishes at the scheduled time once the last step approves. Errors: `404 workflow_not_found`, `400 validation_error` (no `--schedule`, or the workflow has no approvers on step 1) |
-| `posts:delete <id>` | Delete a post (cannot be undone) |
+| `posts:delete <id>` | Remove a post from OmniSocials (cannot be undone). Never deletes the live post on a platform |
 
 ### Media
 
@@ -200,15 +202,19 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 
 ### Inbox (Social Inbox)
 
-Read and reply to DMs, comments, and mentions across connected accounts. TikTok is supported for video comments only (no DMs or mentions); TikTok replies are text-only, capped at 150 characters. YouTube is supported for video comments only (no DMs or mentions); YouTube channels are checked for new comments once per day, so a new YouTube comment can take up to a day to appear. Threads is supported for replies on the user's posts (`type: comment`) and mentions (no DMs); replies publish as native Threads replies, and replies on the user's own posts can be hidden with `inbox:hide`. The Threads inbox is rolling out: until Meta approves the permissions, Threads conversations do not appear and Threads replies/hides return a clear 400. **Requires the opt-in `inbox:read` / `inbox:write` scopes** — the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
+Read and reply to DMs, comments, and mentions across connected accounts. Every comment/mention thread carries the post it is on (`post`: id, caption, thumbnail, url, media_type); the CLI prints it above the thread so a reply can be drafted with the post in view. Replies typed in the native apps (the Instagram app, Messenger) are mirrored into the inbox as outgoing messages and count as answers, so a thread a colleague answered on their phone is not served as unanswered. TikTok is supported for video comments only (no DMs or mentions); TikTok replies are text-only, capped at 150 characters. YouTube is supported for video comments only (no DMs or mentions); YouTube channels are checked for new comments once per day, so a new YouTube comment can take up to a day to appear. Threads is supported for replies on the user's posts (`type: comment`) and mentions (no DMs); replies publish as native Threads replies. The Threads inbox is rolling out: until Meta approves the permissions, Threads conversations do not appear and Threads replies/hides return a clear 400. Comments on the user's own posts can be hidden with `inbox:hide` on Facebook, Instagram, TikTok, YouTube (moderation status rejected) and Threads (top-level replies only), and deleted for good with `inbox:delete` on Facebook, Instagram and TikTok. **Requires the opt-in `inbox:read` / `inbox:write` scopes**: the user enables "Social Inbox access" when creating the API key. If a call returns `insufficient_scope`, tell the user to create a new key with Social Inbox access. `conversation_id` values can contain `:` and `()` (LinkedIn URNs); pass them exactly as returned by `inbox:list` (the CLI URL-encodes them for you). Results are cursor-paginated: when more exist, the CLI prints the `--cursor` value to fetch the next page.
+
+**Answering the inbox (the `inbox:next` loop).** `inbox:next` returns the one item that has waited longest for an answer, with the whole thread (oldest first) and the post it is on, plus how many more are waiting. An item needs an answer when it is the customer's latest DM with no reply after it (Instagram/Facebook DMs only within Meta's 24-hour messaging window, since replies outside it are refused), or a comment/mention that has not been replied to and is not hidden. Only unread items are served by default, so `inbox:read <conversation-id>` is the durable way to skip one (it will not come back); `--exclude <id,id>` leaves conversations out of a single call (temporary skip, up to 100); `--include-read` also serves items that were read but never answered. Looks back 30 days. Reply with `inbox:reply <conversation-id> --text "..." --next` and the response already carries the next item, so working through the inbox is one call per answer. The loop ends when the CLI prints "Nothing is waiting for an answer." Two ids matter: the `conversation_id` (what `inbox:reply` / `inbox:read` take) and the message `id` of the unanswered item (what `inbox:hide` / `inbox:delete` take); the CLI labels both.
 
 | Command | Description |
 |---|---|
-| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin\|tiktok\|youtube\|x\|threads`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
-| `inbox:messages <conversation-id>` | Full message history for one conversation, oldest→newest, each with direction, timestamp, and read/replied state. Flags: `--limit`, `--cursor`. Requires `inbox:read`. |
-| `inbox:read <conversation-id>` | Mark a conversation's messages as read. Requires `inbox:write`. |
-| `inbox:reply <conversation-id>` | Send a reply. Flags: `--text` (required), `--attachment-url`, `--attachment-type`. Requires `inbox:write`. A Threads reply needs the Threads reply permission on the connection; a 401 `reauth_required` means the user must reconnect Threads in the dashboard. |
-| `inbox:hide <message-id>` | Hide a reply someone left on one of the user's Threads posts, as the post owner (`--unhide` reverses it). Threads only; takes the message `id` from `inbox:messages`, NOT the conversation id. Only incoming top-level replies can be hidden (nested replies return `not_hideable`). Rolling out. Requires `inbox:write`. |
+| `inbox:list` | List conversations (latest message per conversation). Flags: `--platform instagram\|facebook\|linkedin\|tiktok\|youtube\|x\|threads`, `--type dm\|comment\|mention`, `--unread` (only conversations with unread messages), `--unanswered` (only conversations that still need an answer: the customer's latest DM with no reply after it, within Meta's 24-hour window for Instagram/Facebook DMs, or an unreplied, not-hidden comment/mention; native-app replies count as answers; read state is ignored), `--limit`, `--cursor`. Shows participant, unread count, last message, and the related post for comments/mentions. Requires `inbox:read`. |
+| `inbox:next` | The next conversation that needs an answer, with its thread (oldest first, every message with its id and direction) and the post it is on, plus how many more are waiting. Flags: `--platform`, `--type dm\|comment\|mention`, `--order oldest\|newest` (default oldest: the item that has waited longest), `--include-read` (also serve items marked read but never answered), `--exclude <conversation-id,...>` (leave these out of this call; temporary skip, max 100). Only unread items by default, so `inbox:read` is the durable skip. Looks back 30 days. Prints "Nothing is waiting for an answer." when the queue is empty. Requires `inbox:read`. |
+| `inbox:messages <conversation-id>` | Full message history for one conversation, oldest to newest, each with its message id, direction, timestamp, and read/replied/hidden state. Comment threads print the post block (caption, url, thumbnail) first. Flags: `--limit`, `--cursor`. Requires `inbox:read`. |
+| `inbox:read <conversation-id>` | Mark a conversation's messages as read. Also the durable skip for `inbox:next` (a read conversation is not served again unless `--include-read`). Requires `inbox:write`. |
+| `inbox:reply <conversation-id>` | Send a reply. Flags: `--text` (required), `--attachment-url`, `--attachment-type`, `--next` (the response also carries the next conversation that needs an answer, printed like `inbox:next`, plus the remaining count). Requires `inbox:write`. A Threads reply needs the Threads reply permission on the connection; a 401 `reauth_required` means the user must reconnect Threads in the dashboard. |
+| `inbox:hide <message-id>` | Hide a comment someone left on one of the user's posts, as the post owner (`--unhide` reverses it). Facebook, Instagram, TikTok, YouTube (hide = moderation status rejected, which also pulls its replies from public view) and Threads (incoming top-level replies only; nested replies return `not_hideable`). Takes the message `id` from `inbox:messages` or `inbox:next`, NOT the conversation id. A hidden comment no longer counts as unanswered. Errors: 403 `reconnect_required` (the account was connected without the moderation permission; reconnect it in the dashboard), 429 `quota_exceeded` (YouTube's daily quota; retry after midnight Pacific), 401 `reauth_required`, 404 `account_not_connected`, 502 `platform_error`. Requires `inbox:write`. |
+| `inbox:delete <message-id>` | Delete a comment from the platform for good. Facebook, Instagram and TikTok comments only (YouTube: use `inbox:hide` instead). Cannot be undone, so confirm with the user first. Replies under the comment go with it; the response lists them as `removed_reply_ids`. Takes the message `id`, NOT the conversation id. Same error codes as `inbox:hide`. Requires `inbox:write`. |
 
 ### Webhooks
 
@@ -497,15 +503,40 @@ link: https://example.com/shop"
 ```
 ./scripts/omnisocials.js inbox:list --unread --platform instagram
 # Returns each conversation with its Conversation: <conversation_id>
+./scripts/omnisocials.js inbox:list --unanswered
+# Only the conversations still waiting for a reply
 
 ./scripts/omnisocials.js inbox:messages "<conversation_id>"
+# Comment threads print the post (caption, url, thumbnail) first; every message prints its id
 ./scripts/omnisocials.js inbox:reply "<conversation_id>" --text "Thanks so much for the kind words!"
 ./scripts/omnisocials.js inbox:read "<conversation_id>"
 
-# Threads only (rolling out): hide a reply on your own post, using the
-# message id printed by inbox:messages (not the conversation id)
+# Hide a comment on your own post (Facebook, Instagram, TikTok, YouTube, Threads),
+# using the message id printed by inbox:messages or inbox:next (not the conversation id)
 ./scripts/omnisocials.js inbox:hide "<message_id>"
 ./scripts/omnisocials.js inbox:hide "<message_id>" --unhide
+
+# Delete a comment for good (Facebook, Instagram, TikTok; cannot be undone, confirm with the user first)
+./scripts/omnisocials.js inbox:delete "<message_id>"
+```
+
+### Answer everything that is waiting (the inbox:next loop)
+```
+./scripts/omnisocials.js inbox:next
+# Prints the oldest unanswered item: the conversation id, the message id to answer,
+# the post it is on, the thread oldest first, and "N more waiting"
+
+# Reply and get the next item in the same call; repeat until the CLI prints
+# "Nothing is waiting for an answer."
+./scripts/omnisocials.js inbox:reply "<conversation_id>" --text "Sent you a DM with the details!" --next
+
+# Skip one for good (marking it read means inbox:next will not serve it again)
+./scripts/omnisocials.js inbox:read "<conversation_id>"
+# Skip some for this call only
+./scripts/omnisocials.js inbox:next --exclude "<conversation_id>,<conversation_id>"
+# Narrow the queue, or also take items that were read but never answered
+./scripts/omnisocials.js inbox:next --platform instagram --type comment
+./scripts/omnisocials.js inbox:next --include-read --order newest
 ```
 
 ### Audit a brand-new workspace's existing content (nothing posted via OmniSocials yet)

@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.26.0 (2026-09-06)
+
+### Added
+- **Answer the inbox as a work queue.** New `inbox:next` command returns the one conversation that has waited longest for an answer (the customer's latest DM with no reply after it, within Meta's 24-hour window for Instagram/Facebook DMs, or an unreplied, not-hidden comment/mention), with the whole thread oldest first (every message with its id and direction), the post it is on (caption, url, thumbnail), and how many more are waiting. Flags: `--platform`, `--type dm|comment|mention`, `--order oldest|newest`, `--include-read`, `--exclude <conversation-id,...>`. Only unread items are served by default, so `inbox:read` is the durable skip and `--exclude` the temporary one (max 100). Looks back 30 days. Prints "Nothing is waiting for an answer." when the queue is empty. Requires `inbox:read`.
+- **`inbox:reply --next`.** Sends `include_next: true`; the response carries the next unanswered item and the remaining count, printed right after the sent confirmation, so working through the inbox is one call per answer.
+- **`inbox:list --unanswered`.** Only conversations that still need a reply (read state ignored; native-app replies count as answers).
+- **`inbox:delete <message-id>`.** Deletes a comment from the platform for good. Facebook, Instagram and TikTok comments only (YouTube: `inbox:hide`). Cannot be undone; replies under the comment go with it and the response lists them as `removed_reply_ids`. Takes the message id, not the conversation id. Requires `inbox:write`.
+
+### Changed
+- **`inbox:hide` now covers Facebook, Instagram, TikTok and YouTube comments** as well as Threads replies (YouTube hide = moderation status rejected, which also pulls the comment's replies from public view). The message `hidden` flag is a boolean on every comment platform now (null on DMs) and the CLI prints `hidden` instead of `hidden on Threads`. New error codes to relay: 403 `reconnect_required` (the account was connected without the moderation permission; reconnect it in the dashboard), 429 `quota_exceeded` (YouTube's daily quota), plus 401 `reauth_required`, 404 `account_not_connected`, 502 `platform_error`.
+- **Post context on comment threads.** `inbox:messages` and `inbox:next` print the post block (caption, url, thumbnail) above comment threads; the API's `post` object gained `url` and `media_type`.
+- **Native replies are mirrored.** Replies typed in the Instagram app or Messenger now show up as outgoing messages in the thread and mark the customer's messages replied, so `inbox:next` and `--unanswered` do not serve threads that were already answered on the phone.
+
 ## 1.25.0 (2026-09-06)
 
 ### Added

@@ -579,8 +579,9 @@ function formatMessage(msg, index) {
   if (msg.is_read === false) meta.push("unread");
   if (msg.is_replied) meta.push("replied");
   if (msg.reaction) meta.push(`reaction: ${msg.reaction}`);
-  // Threads replies only: true when hidden on Threads (flip with inbox:hide).
-  if (msg.hidden === true) meta.push("hidden on Threads");
+  // Comments on every inbox platform: true when hidden on the platform (flip
+  // with inbox:hide). DMs have no hidden state (null).
+  if (msg.hidden === true) meta.push("hidden");
   lines.push(`    ${meta.join("  ·  ")}`);
   if (msg.permalink) lines.push(`    ${msg.permalink}`);
   return lines.join("\n");
@@ -591,6 +592,70 @@ function printPagination(pagination) {
   if (pagination && pagination.has_more && pagination.next_cursor) {
     console.log(`\nMore — pass --cursor "${pagination.next_cursor}" for the next page.`);
   }
+}
+
+// The post a comment/mention thread belongs to ({ id, caption, thumbnail, url,
+// media_type }). Printed above comment threads so a reply can be drafted with
+// the post in view. DMs have no post.
+function formatPostBlock(post) {
+  if (!post) return "";
+  const lines = [];
+  const kind = post.media_type ? `  (${post.media_type})` : "";
+  lines.push(`On post: ${post.id || "(unknown id)"}${kind}`);
+  if (post.caption) lines.push(`    Caption: ${truncate(post.caption, 200)}`);
+  if (post.url) lines.push(`    URL: ${post.url}`);
+  if (post.thumbnail) lines.push(`    Thumbnail: ${post.thumbnail}`);
+  return lines.join("\n");
+}
+
+// Shared by inbox:next and inbox:reply --next. `data` is one /inbox/next item
+// ({ conversation, message, messages }) or null when nothing is waiting;
+// `remaining` is how many more unanswered items sit behind it.
+function printNextItem(data, remaining) {
+  if (!data) {
+    console.log("Nothing is waiting for an answer.");
+    return;
+  }
+  const convo = data.conversation || {};
+  const msg = data.message || {};
+  const p = convo.participant || msg.sender || {};
+  const name = p.name || p.username || p.id || "Unknown";
+  const handle = p.username && p.username !== name ? ` (@${p.username})` : "";
+  const platform = convo.platform || msg.platform || "unknown";
+  const type = convo.type || msg.type || "message";
+  const convId = convo.conversation_id || msg.conversation_id;
+
+  console.log(`Next up: ${platform} ${type} from ${name}${handle}`);
+  console.log("─".repeat(40));
+  // Two ids matter: the conversation id (inbox:reply / inbox:read) and the
+  // message id of the unanswered item (inbox:hide / inbox:delete).
+  console.log(`Conversation: ${convId}`);
+  console.log(`Message to answer: ${msg.id}${msg.timestamp ? `  ${msg.timestamp}` : ""}`);
+  const post = msg.post || convo.post;
+  if (post) console.log(formatPostBlock(post));
+
+  const messages = Array.isArray(data.messages) ? data.messages : [];
+  if (messages.length) {
+    console.log("\nThread (oldest first)");
+    console.log(
+      messages
+        .map((m, i) => {
+          const block = formatMessage(m, i);
+          return String(m.id) === String(msg.id) ? `${block}\n    ^ answer this one` : block;
+        })
+        .join("\n\n")
+    );
+  }
+
+  const n = Number(remaining) || 0;
+  console.log(`\n${n} more waiting.`);
+  const moderation =
+    type === "comment" || type === "mention"
+      ? `; hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}`
+      : "";
+  console.log(
+    `Reply with inbox:reply "${convId}" --text "..." --next; skip it for good with inbox:read "${convId}"${moderation}`
+  );
 }
 
 function handleResult(result, flags, formatter) {
@@ -1733,6 +1798,7 @@ async function cmdInboxList(config, flags) {
     platform: flags.platform,
     type: flags.type,
     unread: flags.unread,
+    unanswered: flags.unanswered,
     limit: flags.limit,
     cursor: flags.cursor,
   });
@@ -1771,6 +1837,13 @@ async function cmdInboxMessages(config, flags, positional) {
       console.log("No messages in this conversation.");
       return;
     }
+    // Comment/mention threads: show the post the thread is on first so a
+    // reply can be drafted with it in view (DMs carry no post).
+    const withPost = messages.find((m) => m && m.post);
+    if (withPost) {
+      console.log(formatPostBlock(withPost.post));
+      console.log("");
+    }
     console.log(`Messages (${messages.length})`);
     console.log("─".repeat(40));
     console.log(messages.map((m, i) => formatMessage(m, i)).join("\n\n"));
@@ -1808,7 +1881,7 @@ async function cmdInboxReply(config, flags, positional) {
   const text = flags.text;
   if (!id || !text) {
     console.error(
-      'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--attachment-url <url> --attachment-type <type>]'
+      'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--attachment-url <url> --attachment-type <type> --next]'
     );
     process.exit(1);
   }
@@ -1816,6 +1889,10 @@ async function cmdInboxReply(config, flags, positional) {
   const body = { text };
   if (flags["attachment-url"]) body.attachment_url = flags["attachment-url"];
   if (flags["attachment-type"]) body.attachment_type = flags["attachment-type"];
+  // --next: the response also carries the next conversation that needs an
+  // answer (`next`, same shape as inbox:next) and `remaining`, so working
+  // through the inbox is one call per answer.
+  if (flags.next) body.include_next = true;
 
   const result = await apiRequest(
     config,
@@ -1828,19 +1905,27 @@ async function cmdInboxReply(config, flags, positional) {
     console.log("Reply sent!");
     if (data && data.id) console.log(`Message ID: ${data.id}`);
     if (data && data.timestamp) console.log(`Sent: ${data.timestamp}`);
+    if (flags.next) {
+      console.log("");
+      printNextItem(result.next, result.remaining);
+    }
   });
 }
 
-// Hide (or unhide with --unhide) a reply someone left on one of the user's
-// Threads posts, as the post owner. Threads only for now; only incoming
-// top-level replies can be hidden (nested replies return not_hideable).
-// Takes the message id from inbox:messages, NOT the conversation id.
-// Rolling out: until Meta approves the permission the API answers a clear 400.
+// Hide (or unhide with --unhide) a comment someone left on one of the user's
+// posts, as the post owner. Facebook, Instagram, TikTok, YouTube (hide = the
+// comment's moderation status set to rejected, which also pulls its replies
+// from public view) and Threads (incoming top-level replies only; nested
+// replies return not_hideable). Takes the message id from inbox:messages or
+// inbox:next, NOT the conversation id. Errors worth relaying: 403
+// reconnect_required (account connected without the moderation permission;
+// reconnect it in the dashboard), 429 quota_exceeded (YouTube daily quota),
+// 401 reauth_required, 404 account_not_connected, 502 platform_error.
 async function cmdInboxHide(config, flags, positional) {
   const id = positional[0];
   if (!id) {
     console.error(
-      "Usage: omnisocials inbox:hide <message-id> [--unhide]  (Threads replies on your posts; id from inbox:messages)"
+      "Usage: omnisocials inbox:hide <message-id> [--unhide]  (Facebook, Instagram, TikTok, YouTube, Threads comments on your posts; id from inbox:messages or inbox:next)"
     );
     process.exit(1);
   }
@@ -1853,10 +1938,70 @@ async function cmdInboxHide(config, flags, positional) {
   );
 
   handleResult(result, flags, (data) => {
+    const where = data && data.platform ? ` on ${data.platform}` : "";
     if (data && data.hidden === true) {
-      console.log(`Reply ${id} is now hidden on Threads.`);
+      console.log(`Comment ${id} is now hidden${where}.`);
     } else {
-      console.log(`Reply ${id} is now visible on Threads again.`);
+      console.log(`Comment ${id} is visible${where} again.`);
+    }
+  });
+}
+
+// Work queue: the next conversation that still needs an answer, with its
+// thread and the post it is on, so a reply can be drafted from one call.
+// Only unread items are served by default: inbox:read is the durable skip,
+// --exclude a temporary one for this call. Looks back 30 days.
+async function cmdInboxNext(config, flags) {
+  const order = flags.order;
+  if (order !== undefined && !["oldest", "newest"].includes(order)) {
+    console.error(
+      "Usage: omnisocials inbox:next [--platform <platform> --type dm|comment|mention --order oldest|newest --include-read --exclude <conv-id,conv-id>]"
+    );
+    process.exit(1);
+  }
+  const exclude =
+    typeof flags.exclude === "string" ? splitComma(flags.exclude).join(",") : undefined;
+
+  const result = await apiRequest(config, "GET", "/inbox/next", undefined, {
+    platform: flags.platform,
+    type: flags.type,
+    order,
+    include_read: flags["include-read"],
+    exclude,
+  });
+
+  handleResult(result, flags, (data) => {
+    printNextItem(data, result.remaining);
+  });
+}
+
+// Delete a comment from the platform for good. Facebook, Instagram and TikTok
+// comments only (YouTube offers no delete for other people's comments: use
+// inbox:hide). Cannot be undone. Replies under the comment go with it. Takes
+// the message id from inbox:messages or inbox:next, NOT the conversation id.
+async function cmdInboxDelete(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    console.error(
+      "Usage: omnisocials inbox:delete <message-id>  (Facebook, Instagram, TikTok comments; id from inbox:messages or inbox:next; cannot be undone)"
+    );
+    process.exit(1);
+  }
+
+  const result = await apiRequest(
+    config,
+    "DELETE",
+    `/inbox/messages/${encodeURIComponent(id)}`
+  );
+
+  handleResult(result, flags, (data) => {
+    const d = data || {};
+    console.log(`Comment ${d.id || id} deleted from the platform.`);
+    if (d.conversation_id) console.log(`Conversation: ${d.conversation_id}`);
+    const replies = Array.isArray(d.removed_reply_ids) ? d.removed_reply_ids : [];
+    if (replies.length) {
+      const noun = replies.length === 1 ? "reply" : "replies";
+      console.log(`Also removed ${replies.length} ${noun} under it: ${replies.join(", ")}`);
     }
   });
 }
@@ -2002,7 +2147,7 @@ POSTS
   posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
   posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step)
   posts:reject <id>              Reject a post's approval workflow, stopping it immediately [--comment "..."]
-  posts:delete <id>              Delete a post
+  posts:delete <id>              Remove a post from OmniSocials (the live post stays)
 
 MEDIA
   media:list                     List media files [--limit --offset]
@@ -2042,12 +2187,14 @@ ANALYTICS
   analytics:accounts             Account analytics [--platform --date]
   analytics:best-times           Recommended posting slots [--platform (required) --timezone]
 
-INBOX (Social Inbox — needs the opt-in inbox:read / inbox:write scopes)
-  inbox:list                     List conversations [--platform --type dm|comment|mention --unread --limit --cursor]
-  inbox:messages <conv-id>       Full message history for one conversation [--limit --cursor]
-  inbox:read <conv-id>           Mark a conversation's messages as read (inbox:write)
-  inbox:reply <conv-id>          Reply to a conversation [--text (required) --attachment-url --attachment-type] (inbox:write)
-  inbox:hide <message-id>        Hide a reply on your Threads post; --unhide reverses it (Threads only, rolling out) (inbox:write)
+INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
+  inbox:list                     List conversations [--platform --type dm|comment|mention --unread --unanswered --limit --cursor]
+  inbox:next                     Next conversation that needs an answer, with its thread and post [--platform --type --order oldest|newest --include-read --exclude <conv-id,conv-id>]
+  inbox:messages <conv-id>       Full message history for one conversation; comment threads print the post first [--limit --cursor]
+  inbox:read <conv-id>           Mark a conversation's messages as read; also the durable skip for inbox:next (inbox:write)
+  inbox:reply <conv-id>          Reply to a conversation [--text (required) --attachment-url --attachment-type --next] (inbox:write)
+  inbox:hide <message-id>        Hide a comment on your post (Facebook, Instagram, TikTok, YouTube, Threads); --unhide reverses it (inbox:write)
+  inbox:delete <message-id>      Delete a comment from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
 
 WEBHOOKS
   webhooks:list                  List webhooks
@@ -2134,7 +2281,8 @@ EXAMPLES
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
   omnisocials locations:search "Blue Bottle Coffee"
   omnisocials inbox:list --platform instagram --unread
-  omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!"
+  omnisocials inbox:next --platform instagram
+  omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --next
   omnisocials posts:list --status scheduled --json
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
 
@@ -2179,10 +2327,12 @@ const COMMANDS = {
   "analytics:accounts": { handler: cmdAnalyticsAccounts },
   "analytics:best-times": { handler: cmdAnalyticsBestTimes },
   "inbox:list": { handler: cmdInboxList },
+  "inbox:next": { handler: cmdInboxNext },
   "inbox:messages": { handler: cmdInboxMessages },
   "inbox:read": { handler: cmdInboxMarkRead },
   "inbox:reply": { handler: cmdInboxReply },
   "inbox:hide": { handler: cmdInboxHide },
+  "inbox:delete": { handler: cmdInboxDelete },
   "webhooks:list": { handler: cmdWebhooksList },
   "webhooks:create": { handler: cmdWebhooksCreate },
   "webhooks:get": { handler: cmdWebhooksGet },
