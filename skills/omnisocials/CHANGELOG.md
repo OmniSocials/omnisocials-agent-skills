@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.26.1 (2026-09-14)
+
+### Changed
+- **Threads threads and the Threads inbox are no longer "rolling out".** Meta approved the reply, read-replies and mentions permissions, so `--threads-thread` and the Threads `inbox:*` commands work for every Threads connection. Accounts connected before 2026-09-14 need a one-time reconnect in the OmniSocials dashboard; until then the API answers 400 naming the reconnect (posts) or 401 `reauth_required` (inbox). `--threads-location-id` and `locations:search --platform threads` stay rolling out: Meta has not approved the location permission yet, so they still answer 400 / `not_available`.
+
 ## 1.26.0 (2026-09-06)
 
 ### Added
