@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.26.3 (2026-09-22)
+
+### Changed
+- **`inbox:reply` explains a `422 reply_not_allowed`.** The API answers 422 instead of 502 when the platform refuses replies to an item for good: Facebook #1705 (the comment sits on a share or boosted copy of the post, or the commenter restricts replies) and YouTube threads whose canReply is false (comments off on the video, or the comment removed or held for review). The item is dropped from `inbox:next` automatically; relay it to the user, do not retry.
+- **`inbox:hide` explains a `422 cannot_hide`.** Facebook does not let the Page hide some comments (the commenter blocked the Page, their account is deactivated or restricted, or the comment sits on a shared copy of the post). The API now reads the comment back and answers 422 when Facebook's `can_hide` is false, instead of a 502 on every attempt. Retrying never changes it; use `inbox:read` if the item should stop coming up.
+
+## 1.26.2 (2026-09-17)
+
+### Changed
+- **`inbox:reply` refuses an accidental repeat.** The same reply (same text and attachment) sent twice to one comment, or to one DM conversation, within 10 minutes answers `409 duplicate_reply` and nothing goes out again. Treat it as done and continue with `inbox:next`; do not resend.
+- **Facebook comments deleted, hidden or edited on Facebook are mirrored** into the inbox (removed, `hidden` flipped, text updated), so `inbox:next` no longer serves a comment that no longer exists on Facebook.
+- **`inbox:next` names the author of the comment being served** on Facebook comment threads (all comments on one post share a conversation); it used to name the newest commenter on the post.
+
 ## 1.26.1 (2026-09-14)
 
 ### Changed
