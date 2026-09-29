@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.26.3";
+const VERSION = "1.28.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -225,10 +225,15 @@ function assemblePlatformOptions(flags) {
       // Multi-image style: true = plain image gallery instead of the default
       // swipeable PDF document carousel. Ignored for 0-1 images/videos/polls.
       "linkedin-carousel-as-images": { key: "carousel_as_images", transform: (v) => v === true || v === "true" },
+      // Document source when the images are the unchanged pages of one
+      // uploaded PDF: original_pdf (default, LinkedIn gets the kept file) or
+      // slides (document rebuilt from the slide images).
+      "linkedin-document-source": "document_source",
     },
     linkedin_page: {
       "linkedin-page-first-comment": "first_comment",
       "linkedin-page-carousel-as-images": { key: "carousel_as_images", transform: (v) => v === true || v === "true" },
+      "linkedin-page-document-source": "document_source",
     },
     tiktok: {
       // Photo carousels only: the Photo Mode title TikTok shows above the
@@ -609,8 +614,11 @@ function formatPostBlock(post) {
 }
 
 // Shared by inbox:next and inbox:reply --next. `data` is one /inbox/next item
-// ({ conversation, message, messages }) or null when nothing is waiting;
-// `remaining` is how many more unanswered items sit behind it.
+// ({ conversation, message, messages, reply_window }) or null when nothing is
+// waiting; `remaining` is how many more unanswered items sit behind it. The
+// queue serves DMs that can still be answered first, then Instagram/Facebook
+// DMs whose 24-hour window has closed (reply_window.open false), then
+// comments and mentions.
 function printNextItem(data, remaining) {
   if (!data) {
     console.log("Nothing is waiting for an answer.");
@@ -624,13 +632,34 @@ function printNextItem(data, remaining) {
   const platform = convo.platform || msg.platform || "unknown";
   const type = convo.type || msg.type || "message";
   const convId = convo.conversation_id || msg.conversation_id;
+  const isComment = type === "comment" || type === "mention";
+  const replyWindow = data.reply_window || msg.reply_window || convo.reply_window || null;
+  const windowClosed = !!replyWindow && replyWindow.open === false;
+  const app =
+    platform === "instagram" ? "Instagram" : platform === "facebook" ? "Facebook" : "Instagram/Facebook";
 
   console.log(`Next up: ${platform} ${type} from ${name}${handle}`);
   console.log("─".repeat(40));
   // Two ids matter: the conversation id (inbox:reply / inbox:read) and the
-  // message id of the unanswered item (inbox:hide / inbox:delete).
+  // message id of the unanswered item (inbox:reply --message-id on comment
+  // threads, inbox:hide / inbox:delete).
   console.log(`Conversation: ${convId}`);
-  console.log(`Message to answer: ${msg.id}${msg.timestamp ? `  ${msg.timestamp}` : ""}`);
+  console.log(
+    `Message to answer: ${msg.id}${msg.timestamp ? `  ${msg.timestamp}` : ""}${
+      isComment ? "  (pass as --message-id when replying)" : ""
+    }`
+  );
+  // Only Instagram and Facebook DMs have a reply window (Meta's 24-hour rule:
+  // closes_at = the customer's last message + 24 h). Every other item is
+  // served as { open: true, closes_at: null }. A closed window means
+  // inbox:reply answers 422 outside_messaging_window without sending.
+  if (windowClosed) {
+    console.log(
+      `Reply window closed ${replyWindow.closes_at || "(time unknown)"} (Meta 24-hour rule): answer this DM from the ${app} app or run inbox:read "${convId}" to skip it`
+    );
+  } else if (replyWindow && replyWindow.closes_at) {
+    console.log(`Reply window open until ${replyWindow.closes_at} (Meta 24-hour rule)`);
+  }
   const post = msg.post || convo.post;
   if (post) console.log(formatPostBlock(post));
 
@@ -649,12 +678,18 @@ function printNextItem(data, remaining) {
 
   const n = Number(remaining) || 0;
   console.log(`\n${n} more waiting.`);
-  const moderation =
-    type === "comment" || type === "mention"
-      ? `; hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}`
-      : "";
+  if (windowClosed) {
+    console.log(
+      `Do not call inbox:reply on this one (it answers 422 outside_messaging_window and sends nothing). Answer it from the ${app} app, which mirrors the reply into the inbox and clears the item, or skip it for good with inbox:read "${convId}"`
+    );
+    return;
+  }
+  const messageId = isComment ? ` --message-id ${msg.id}` : "";
+  const moderation = isComment
+    ? `; hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}`
+    : "";
   console.log(
-    `Reply with inbox:reply "${convId}" --text "..." --next; skip it for good with inbox:read "${convId}"${moderation}`
+    `Reply with inbox:reply "${convId}" --text "..."${messageId} --next; skip it for good with inbox:read "${convId}"${moderation}`
   );
 }
 
@@ -1084,6 +1119,10 @@ async function cmdMediaUpload(config, flags) {
 
   const body = { url };
   if (flags.filename) body.filename = flags.filename;
+  if (flags.name) body.name = flags.name;
+  if (flags.folder) body.folder = flags.folder;
+  if (flags["folder-id"]) body.folder_id = flags["folder-id"];
+  if (flags["pdf-mode"]) body.pdf_mode = flags["pdf-mode"];
 
   const result = await apiRequest(config, "POST", "/media/upload-from-url", body);
 
@@ -1134,19 +1173,39 @@ const EXT_TO_MIME = {
 // true if it handled a PDF result, false for a normal single-media result.
 function printPdfUploadResult(result) {
   if (!Array.isArray(result.media_ids) || !result.media_ids.length) return false;
+  // --pdf-mode document: ONE media item for the whole PDF.
+  if (result.data && result.data.type === "document") {
+    const pages = result.data.pdf && Array.isArray(result.data.pdf.pages)
+      ? result.data.pdf.pages.length
+      : result.pdf && result.pdf.rendered_pages;
+    console.log(`PDF uploaded as one media item (${pages} page(s)).`);
+    if (result.pdf && result.pdf.truncated) {
+      console.log(
+        `(${result.pdf.total_pages} pages in the file; the first ${result.pdf.rendered_pages} became page images. LinkedIn still receives the full file.)`
+      );
+    }
+    console.log(`Media ID (pass to posts:create --media-ids; expands into every page): ${result.data.id}`);
+    console.log(
+      "On LinkedIn it posts as a swipeable document made from the original PDF file; on Instagram, TikTok, Threads and Pinterest as an image carousel."
+    );
+    return true;
+  }
   console.log(
     `PDF uploaded and split into ${result.media_ids.length} image slide(s).`
   );
   if (result.pdf && result.pdf.truncated) {
     console.log(
-      `(imported the first ${result.pdf.rendered_pages} of ${result.pdf.total_pages} pages; max 20)`
+      `(the first ${result.pdf.rendered_pages} of ${result.pdf.total_pages} pages became slides; max 20. LinkedIn still receives the full file.)`
     );
+  }
+  if (result.pdf && result.pdf.name) {
+    console.log(`Original PDF kept: ${result.pdf.name}${result.pdf.id ? ` (id ${result.pdf.id})` : ""}`);
   }
   console.log(
     `Slide media IDs (pass ALL to posts:create --media-ids): ${result.media_ids.join(",")}`
   );
   console.log(
-    "On LinkedIn these post as a swipeable document carousel; on Instagram, TikTok, Threads and Pinterest as an image carousel."
+    "On LinkedIn these post as a swipeable document made from the original PDF file (text stays sharp, links keep working) as long as the slides are posted unchanged and in order; on Instagram, TikTok, Threads and Pinterest as an image carousel. Pass --linkedin-document-source slides to send a document rebuilt from the slide images instead."
   );
   return true;
 }
@@ -1199,6 +1258,7 @@ async function cmdMediaUploadBase64(config, flags) {
   if (flags.name) body.name = flags.name;
   if (flags.folder) body.folder = flags.folder;
   if (flags["folder-id"]) body.folder_id = flags["folder-id"];
+  if (flags["pdf-mode"]) body.pdf_mode = flags["pdf-mode"];
 
   const result = await apiRequest(config, "POST", "/media/upload-from-base64", body);
   handleResult(result, flags, (d) => {
@@ -1876,17 +1936,34 @@ async function cmdInboxMarkRead(config, flags, positional) {
   });
 }
 
+// Send a reply. Every comment on a post shares ONE conversation, so on a
+// comment/mention thread pass --message-id <message-id> (the "Message to
+// answer" id from inbox:next, or a message id from inbox:messages) to name the
+// comment being answered; without it the API replies under the NEWEST incoming
+// comment on the post, which may be a different person. Ignored for DMs (a DM
+// reply goes to the conversation). Instagram/Facebook DMs whose 24-hour window
+// has closed answer 422 outside_messaging_window before anything is sent:
+// answer them from the native app, do not retry.
 async function cmdInboxReply(config, flags, positional) {
   const id = positional[0];
   const text = flags.text;
+  const usage =
+    'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--message-id <message-id> --attachment-url <url> --attachment-type <type> --next]';
   if (!id || !text) {
+    console.error(usage);
+    process.exit(1);
+  }
+  const messageId = flags["message-id"];
+  if (messageId !== undefined && !/^\d+$/.test(String(messageId))) {
+    console.error(usage);
     console.error(
-      'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--attachment-url <url> --attachment-type <type> --next]'
+      "--message-id takes the numeric message id printed by inbox:next (Message to answer) or inbox:messages, not the conversation id."
     );
     process.exit(1);
   }
 
   const body = { text };
+  if (messageId !== undefined) body.message_id = String(messageId);
   if (flags["attachment-url"]) body.attachment_url = flags["attachment-url"];
   if (flags["attachment-type"]) body.attachment_type = flags["attachment-type"];
   // --next: the response also carries the next conversation that needs an
@@ -1919,8 +1996,14 @@ async function cmdInboxReply(config, flags, positional) {
 // replies return not_hideable). Takes the message id from inbox:messages or
 // inbox:next, NOT the conversation id. Errors worth relaying: 403
 // reconnect_required (account connected without the moderation permission;
-// reconnect it in the dashboard), 429 quota_exceeded (YouTube daily quota),
-// 401 reauth_required, 404 account_not_connected, 502 platform_error.
+// reconnect it in the dashboard), 422 cannot_hide (Facebook will not let the
+// Page hide this comment; retrying never changes it), 429 quota_exceeded
+// (YouTube daily quota), 502 hide_not_applied (Instagram accepted the call but
+// still reports the comment in the old state, e.g. "Comments from Facebook"
+// under a reel shared to Facebook; hide it in the Instagram or Facebook app,
+// do not retry), 401 reauth_required, 404 account_not_connected, 502
+// platform_error. After an Instagram hide/unhide the API reads the comment
+// back, so `hidden` in the response is Instagram's own state.
 async function cmdInboxHide(config, flags, positional) {
   const id = positional[0];
   if (!id) {
@@ -1949,8 +2032,13 @@ async function cmdInboxHide(config, flags, positional) {
 
 // Work queue: the next conversation that still needs an answer, with its
 // thread and the post it is on, so a reply can be drafted from one call.
-// Only unread items are served by default: inbox:read is the durable skip,
-// --exclude a temporary one for this call. Looks back 30 days.
+// Order: DMs that can still be answered first (Instagram/Facebook DMs inside
+// Meta's 24-hour window, soonest to close first, and X DMs), then
+// Instagram/Facebook DMs whose window has closed (served so the customer is
+// not left waiting; reply_window.open is false), then comments and mentions
+// oldest first. --order newest reverses within each group. Only unread items
+// are served by default: inbox:read is the durable skip, --exclude a
+// temporary one for this call. Looks back 30 days.
 async function cmdInboxNext(config, flags) {
   const order = flags.order;
   if (order !== undefined && !["oldest", "newest"].includes(order)) {
@@ -2151,11 +2239,11 @@ POSTS
 
 MEDIA
   media:list                     List media files [--limit --offset]
-  media:upload                   Upload from URL (image, video, or PDF) [--url --filename]
-  media:upload-base64            Upload a local file or base64 [--file | --data --mime-type] [--name --folder --folder-id]
+  media:upload                   Upload from URL (image, video, or PDF) [--url --filename --name --folder --folder-id --pdf-mode]
+  media:upload-base64            Upload a local file or base64 [--file | --data --mime-type] [--name --folder --folder-id --pdf-mode]
   media:check                    Check media compatibility [--url | --media-id | --size-bytes --mime]
   media:delete <id>              Delete a media file
-  (PDF: a PDF is split into one image slide per page — pass all returned media IDs to posts:create as a carousel)
+  (PDF: a PDF is split into one image slide per page — pass all returned media IDs to posts:create as a carousel. --pdf-mode document keeps it as ONE media item whose single ID expands into every page. The original file is kept and LinkedIn receives it when the pages are posted unchanged)
 
 FOLDERS
   folders:list                   List media folders
@@ -2189,10 +2277,10 @@ ANALYTICS
 
 INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:list                     List conversations [--platform --type dm|comment|mention --unread --unanswered --limit --cursor]
-  inbox:next                     Next conversation that needs an answer, with its thread and post [--platform --type --order oldest|newest --include-read --exclude <conv-id,conv-id>]
+  inbox:next                     Next conversation that needs an answer (answerable DMs first, then expired Meta DMs flagged by reply_window, then comments), with its thread and post [--platform --type --order oldest|newest --include-read --exclude <conv-id,conv-id>]
   inbox:messages <conv-id>       Full message history for one conversation; comment threads print the post first [--limit --cursor]
   inbox:read <conv-id>           Mark a conversation's messages as read; also the durable skip for inbox:next (inbox:write)
-  inbox:reply <conv-id>          Reply to a conversation [--text (required) --attachment-url --attachment-type --next] (inbox:write)
+  inbox:reply <conv-id>          Reply to a conversation [--text (required) --message-id <message-id> (the comment being answered; always pass it on comment threads) --attachment-url --attachment-type --next] (inbox:write)
   inbox:hide <message-id>        Hide a comment on your post (Facebook, Instagram, TikTok, YouTube, Threads); --unhide reverses it (inbox:write)
   inbox:delete <message-id>      Delete a comment from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
 
@@ -2257,6 +2345,8 @@ PLATFORM FLAGS
   --linkedin-page-first-comment  Auto first comment on the LinkedIn company page post
   --linkedin-carousel-as-images  true = post the profile post's 2+ images as a plain image gallery instead of the default swipeable PDF document carousel (false on posts:update reverts)
   --linkedin-page-carousel-as-images  Same as above for the company page post
+  --linkedin-document-source     When the profile post's images are the unchanged pages of one uploaded PDF: original_pdf (default; LinkedIn receives the kept original file: sharp text, working links, every page) or slides (document rebuilt from the slide images). On posts:update, original_pdf reverts
+  --linkedin-page-document-source  Same as above for the company page post
   --linkedin-poll-json '<json>'  Non-sponsored LinkedIn poll(s), independent per channel: {"linkedin":{"question","options":[2-4],"duration":"ONE_DAY|THREE_DAYS|SEVEN_DAYS|FOURTEEN_DAYS"},"linkedin_page":{...}}. Mutually exclusive with media/link-share on that channel. A channel key set to null (or the whole flag as 'null') on posts:update clears it.
   --tiktok-title                 TikTok photo carousel title (max 90 chars; shown above the caption on Photo Mode posts; ignored on video)
   --tiktok-privacy               TikTok privacy level
@@ -2282,7 +2372,7 @@ EXAMPLES
   omnisocials locations:search "Blue Bottle Coffee"
   omnisocials inbox:list --platform instagram --unread
   omnisocials inbox:next --platform instagram
-  omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --next
+  omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --message-id <message-id> --next
   omnisocials posts:list --status scheduled --json
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
 

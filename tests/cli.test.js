@@ -331,6 +331,7 @@ describe("Inbox commands", () => {
     expect(stdout).toContain("inbox:delete <message-id>");
     expect(stdout).toContain("--unanswered");
     expect(stdout).toContain("--include-read --exclude");
+    expect(stdout).toContain("--message-id <message-id>");
     expect(stdout).toContain("--attachment-type --next]");
   });
 
@@ -506,6 +507,8 @@ describe("Inbox work queue (mock API)", () => {
         expect(stdout).toContain("Next up: instagram comment from Jane Doe (@janedoe)");
         expect(stdout).toContain("Conversation: ig_comment_18001");
         expect(stdout).toContain("Message to answer: 42");
+        expect(stdout).toContain("(pass as --message-id when replying)");
+        expect(stdout).not.toContain("Reply window");
         expect(stdout).toContain("On post: 17912345678901234  (IMAGE)");
         expect(stdout).toContain("Caption: Summer drop is live");
         expect(stdout).toContain("URL: https://www.instagram.com/p/abc123/");
@@ -514,7 +517,7 @@ describe("Inbox work queue (mock API)", () => {
         expect(stdout.indexOf("id: 41")).toBeLessThan(stdout.indexOf("id: 42"));
         expect(stdout).toContain("^ answer this one");
         expect(stdout).toContain("3 more waiting.");
-        expect(stdout).toContain('inbox:reply "ig_comment_18001" --text "..." --next');
+        expect(stdout).toContain('inbox:reply "ig_comment_18001" --text "..." --message-id 42 --next');
         expect(stdout).toContain('inbox:read "ig_comment_18001"');
         expect(stdout).toContain("inbox:hide 42 / inbox:delete 42");
       }
@@ -542,7 +545,80 @@ describe("Inbox work queue (mock API)", () => {
         expect(stdout).toContain("Next up: instagram dm from Jane Doe");
         expect(stdout).not.toContain("On post:");
         expect(stdout).not.toContain("inbox:hide");
+        expect(stdout).not.toContain("--message-id");
+        expect(stdout).toContain('inbox:reply "ig_dm_7" --text "..." --next');
         expect(stdout).toContain("0 more waiting.");
+      }
+    );
+  });
+
+  it("inbox:next prints an open reply window and flags a closed one instead of suggesting inbox:reply", async () => {
+    const dm = msg({ type: "dm", conversation_id: "ig_dm_9", post: null });
+    const base = {
+      conversation: { ...NEXT_ITEM.conversation, conversation_id: "ig_dm_9", type: "dm", post: null },
+      message: dm,
+      messages: [dm],
+    };
+    let item = { ...base, reply_window: { open: true, closes_at: "2026-09-25T08:00:00.000Z" } };
+    await withMockServer(
+      () => ({ json: { data: item, remaining: 1 } }),
+      async (baseUrl) => {
+        const open = await run(["inbox:next", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(open.exitCode).toBe(0);
+        expect(open.stdout).toContain("Reply window open until 2026-09-25T08:00:00.000Z (Meta 24-hour rule)");
+        expect(open.stdout).toContain('Reply with inbox:reply "ig_dm_9" --text "..." --next');
+
+        item = { ...base, reply_window: { open: false, closes_at: "2026-09-15T11:25:34.352Z" } };
+        const closed = await run(["inbox:next", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(closed.exitCode).toBe(0);
+        expect(closed.stdout).toContain("Conversation: ig_dm_9");
+        expect(closed.stdout).toContain(
+          'Reply window closed 2026-09-15T11:25:34.352Z (Meta 24-hour rule): answer this DM from the Instagram app or run inbox:read "ig_dm_9" to skip it'
+        );
+        expect(closed.stdout).toContain("422 outside_messaging_window");
+        expect(closed.stdout).toContain("1 more waiting.");
+        expect(closed.stdout).not.toContain("Reply with inbox:reply");
+        expect(closed.stdout).not.toContain("--message-id");
+      }
+    );
+  });
+
+  it("inbox:reply sends --message-id as message_id and rejects a non-numeric one before calling the API", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "99" } } }),
+      async (baseUrl, calls) => {
+        const ok = await run([
+          "inbox:reply",
+          "ig_comment_18001",
+          "--text",
+          "Sent you a DM!",
+          "--message-id",
+          "42",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(ok.exitCode).toBe(0);
+        expect(calls[0].path).toBe("/inbox/conversations/ig_comment_18001/reply");
+        expect(calls[0].body).toEqual({ text: "Sent you a DM!", message_id: "42" });
+
+        const bad = await run([
+          "inbox:reply",
+          "ig_comment_18001",
+          "--text",
+          "x",
+          "--message-id",
+          "ig_comment_18001",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("Usage:");
+        expect(bad.stderr).toContain("--message-id takes the numeric message id");
+        expect(calls).toHaveLength(1);
       }
     );
   });
