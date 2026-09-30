@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.29.0 (2026-09-30)
+
+### Added
+- **`--video-cover-json` on `posts:create`, `posts:create-and-publish` and `posts:update`** (sent as the top-level `video_cover` object). The thumbnail of a post whose media is one video: `{"type":"frame","thumb_offset":3000}` or `{"type":"custom","cover_url":"https://..."}`, plus optional per-platform `overrides`. Applied on Instagram, Facebook, LinkedIn Profile and Page, TikTok (frame only) and Pinterest. `null` on `posts:update` removes it. The API has taken `video_cover` since 2026-09-16; the CLI had no flag for it.
+
+### Changed
+- **Facebook Reels longer than 90 seconds are accepted.** The API no longer refuses a Facebook Reel over 90 seconds when it is scheduled or published: a Reel now follows the 240 minute ceiling of a Facebook feed video (Meta removed the Reel length limit in June 2025). No CLI change. If Facebook refuses a length at publish time, the Facebook target fails with "Facebook did not accept the length of this video..." and the video can go out with `--type post`.
+- **SKILL.md: a cover is not shown on YouTube Shorts.** YouTube stores the cover as the video's default thumbnail, but displays a frame from the video on Shorts, so the skill tells the agent not to promise a custom Shorts thumbnail.
+
 ## 1.28.0 (2026-09-28)
 
 ### Added

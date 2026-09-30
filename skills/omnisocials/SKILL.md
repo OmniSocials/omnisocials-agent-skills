@@ -132,7 +132,7 @@ Follow this workflow when creating posts:
 | `posts:list` | List posts. Flags: `--status draft\|in_approval\|scheduled\|posting\|published\|failed\|warning` (`in_approval` = waiting for a reviewer in an approval workflow), `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
 | `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights; TikTok includes average_time_watched/full_video_watched_rate/total_time_watched/favorites/reach when the workspace enabled TikTok comments). Records also carry `duration_seconds` (integer, nullable): video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and platforms that don't expose it (Instagram's media API has no duration field). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25; X defaults to 10 unless set explicitly — its API bills per returned post), `--platforms` (comma-separated filter). X results may come from a snapshot up to 24h old, refreshed right after publishing to X through OmniSocials. Requires the `analytics:read` scope. |
-| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`, `--threads-location-id`, plus platform flags |
+| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`, `--threads-location-id`, `--video-cover-json`, plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
 | `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create`. `--schedule` on a post pending approval (`in_approval`) moves only the time and does not change its status |
 | `posts:publish <id>` | Publish a draft/scheduled post now. Refuses posts whose status is `failed` or `warning`; use `posts:retry` for those |
@@ -278,6 +278,8 @@ All commands support these flags:
 | `--youtube-category-id` | YouTube category ID |
 | `--youtube-made-for-kids` | Made for kids flag |
 
+A custom thumbnail cannot be set on a Short through OmniSocials: YouTube displays a frame from the video on Shorts (see **Video cover**). The user sets a Shorts thumbnail in YouTube Studio or the YouTube app.
+
 #### Instagram
 | Flag | Description |
 |---|---|
@@ -340,6 +342,28 @@ omnisocials posts:create \
   --content "What should we build next?" \
   --accounts your-linkedin-profile-account-id,your-linkedin-page-account-id \
   --linkedin-poll-json '{"linkedin":{"question":"What should WE build?","options":["A","B"],"duration":"SEVEN_DAYS"},"linkedin_page":{"question":"What should our COMPANY build?","options":["A","B","C"],"duration":"FOURTEEN_DAYS"}}'
+```
+
+#### Video cover
+The thumbnail of a post whose media is **one video** (feed video or reel). One object for every platform that takes a cover: Instagram, Facebook, LinkedIn Profile and Page, TikTok and Pinterest.
+
+| Flag | Description |
+|---|---|
+| `--video-cover-json` | Full `video_cover` JSON object: `{"type": "frame", "thumb_offset": 3000}` (milliseconds into the video) or `{"type": "custom", "cover_url": "https://..."}` (JPEG/PNG), plus an optional `"overrides"` object keyed by platform (`instagram`, `facebook`, `linkedin`, `linkedin_page`, `tiktok`, `pinterest`, `youtube`) that wins over the base cover for that platform |
+
+- **TikTok only takes a frame.** A `custom` cover is skipped there, so add `"overrides": {"tiktok": {"type": "frame", "thumb_offset": 2000}}` when the user wants a specific TikTok frame.
+- **Not shown on YouTube Shorts.** YouTube stores the cover as the video's default thumbnail, but displays a frame from the video on the Shorts tab, in the Shorts feed and in link previews. Do not promise a custom Shorts thumbnail: the user sets one in YouTube Studio or picks a frame in the YouTube app.
+- The older per-platform flags (`--instagram-cover-url`, `--instagram-thumb-offset`, `--tiktok-video-cover-timestamp-ms`, `--pinterest-video-cover`) keep working and win over the base cover for their platform.
+- On `posts:update <id>` the stored cover is replaced wholesale; pass `--video-cover-json null` to remove it. `posts:get` returns it as `video_cover`.
+
+```bash
+# One custom cover everywhere, a chosen frame on TikTok
+omnisocials posts:create \
+  --text "New tutorial" \
+  --channels <instagram_id>,<facebook_id>,<tiktok_id> \
+  --type reel \
+  --media-urls "https://example.com/video.mp4" \
+  --video-cover-json '{"type":"custom","cover_url":"https://example.com/cover.jpg","overrides":{"tiktok":{"type":"frame","thumb_offset":2000}}}'
 ```
 
 #### TikTok

@@ -124,6 +124,72 @@ describe("CLI basics", () => {
     expect(stderr).toContain("Usage:");
   });
 
+  it("posts:create sends --video-cover-json as video_cover", async () => {
+    const cover = {
+      type: "custom",
+      cover_url: "https://example.com/cover.jpg",
+      overrides: { tiktok: { type: "frame", thumb_offset: 2000 } },
+    };
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:create",
+          "--text",
+          "New tutorial",
+          "--video-cover-json",
+          JSON.stringify(cover),
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.video_cover).toEqual(cover);
+      }
+    );
+  });
+
+  it("posts:update --video-cover-json null removes the cover", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:update",
+          "p1",
+          "--video-cover-json",
+          "null",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/posts/p1");
+        expect(calls[0].body).toHaveProperty("video_cover", null);
+      }
+    );
+  });
+
+  it("posts:create rejects a --video-cover-json that is not JSON", async () => {
+    const { stderr, exitCode } = await run([
+      "posts:create",
+      "--text",
+      "New tutorial",
+      "--video-cover-json",
+      "{type:frame}",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--video-cover-json must be JSON");
+  });
+
   it("help lists posts:retry", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);

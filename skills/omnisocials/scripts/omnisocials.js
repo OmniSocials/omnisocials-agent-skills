@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.28.0";
+const VERSION = "1.29.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -424,6 +424,24 @@ function buildPostBody(flags) {
       );
     }
     body.linkedin_poll = parsed;
+  }
+
+  // Video cover — the thumbnail of a post whose media is ONE video. Top-level
+  // `video_cover` object: {"type":"frame","thumb_offset":3000} (milliseconds
+  // into the video) or {"type":"custom","cover_url":"https://..."}, plus an
+  // optional "overrides" object keyed by platform. Replaces wholesale on
+  // posts:update — pass the whole flag as `null` to remove the cover. Not
+  // shown on YouTube Shorts (YouTube displays a frame from the video there).
+  if (flags["video-cover-json"] !== undefined) {
+    let parsed;
+    try {
+      parsed = JSON.parse(flags["video-cover-json"]);
+    } catch {
+      exitWithError(
+        '--video-cover-json must be JSON, e.g. \'{"type":"frame","thumb_offset":3000}\' or \'{"type":"custom","cover_url":"https://..."}\', or \'null\' to remove the cover'
+      );
+    }
+    body.video_cover = parsed;
   }
 
   // Merge per-platform option objects (pinterest/youtube/instagram/tiktok/x),
@@ -2348,6 +2366,7 @@ PLATFORM FLAGS
   --linkedin-document-source     When the profile post's images are the unchanged pages of one uploaded PDF: original_pdf (default; LinkedIn receives the kept original file: sharp text, working links, every page) or slides (document rebuilt from the slide images). On posts:update, original_pdf reverts
   --linkedin-page-document-source  Same as above for the company page post
   --linkedin-poll-json '<json>'  Non-sponsored LinkedIn poll(s), independent per channel: {"linkedin":{"question","options":[2-4],"duration":"ONE_DAY|THREE_DAYS|SEVEN_DAYS|FOURTEEN_DAYS"},"linkedin_page":{...}}. Mutually exclusive with media/link-share on that channel. A channel key set to null (or the whole flag as 'null') on posts:update clears it.
+  --video-cover-json '<json>'    Thumbnail for a post whose media is ONE video: {"type":"frame","thumb_offset":3000} (ms into the video) or {"type":"custom","cover_url":"https://..."}, plus optional "overrides" keyed by platform (instagram, facebook, linkedin, linkedin_page, tiktok, pinterest, youtube). TikTok only takes a frame. Not shown on YouTube Shorts (YouTube displays a video frame). 'null' on posts:update removes it.
   --tiktok-title                 TikTok photo carousel title (max 90 chars; shown above the caption on Photo Mode posts; ignored on video)
   --tiktok-privacy               TikTok privacy level
   --tiktok-disable-comment       Disable TikTok comments
