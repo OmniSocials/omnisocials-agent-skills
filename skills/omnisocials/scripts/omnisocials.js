@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.29.0";
+const VERSION = "1.30.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -430,8 +430,9 @@ function buildPostBody(flags) {
   // `video_cover` object: {"type":"frame","thumb_offset":3000} (milliseconds
   // into the video) or {"type":"custom","cover_url":"https://..."}, plus an
   // optional "overrides" object keyed by platform. Replaces wholesale on
-  // posts:update — pass the whole flag as `null` to remove the cover. Not
-  // shown on YouTube Shorts (YouTube displays a frame from the video there).
+  // posts:update — pass the whole flag as `null` to remove the cover. On
+  // YouTube Shorts it shows only on channels where YouTube has enabled custom
+  // Shorts thumbnails; other channels display a frame from the video.
   if (flags["video-cover-json"] !== undefined) {
     let parsed;
     try {
@@ -479,6 +480,11 @@ function formatPost(post, index) {
   const lines = [];
   lines.push(`#${index + 1}  ID: ${post.id}`);
   lines.push(`    Status: ${post.status}`);
+  // none / approved say nothing more than the status does; pending and
+  // rejected have a review worth reading (who it waits for, who rejected, why).
+  if (post.approval_status === "pending" || post.approval_status === "rejected") {
+    lines.push(`    Approval: ${post.approval_status} (review: posts:approval ${post.id})`);
+  }
   lines.push(`    Content: "${truncate(postContentString(post.content), 60)}"`);
   // The API returns `accounts` (channel ids) and `schedule_at`; older code read
   // `channels`/`scheduled_at` which the response never contains, so both showed
@@ -1085,6 +1091,87 @@ async function cmdPostsReject(config, flags, positional) {
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
     if (data.message) console.log(data.message);
+  });
+}
+
+async function cmdPostsApproval(config, flags, positional) {
+  // Reads the review of a post that went through an approval workflow: every
+  // step with its approvers and their decisions, the rejection with its
+  // reason, and the comment thread (oldest first). Read-only (posts:read).
+  // Use it when approval_status is "rejected" (who rejected and why) or
+  // "pending" (who the post waits for). A post without a workflow answers
+  // status "none" with empty steps and comments.
+  const id = positional[0];
+  if (!id) {
+    console.error("Usage: omnisocials posts:approval <id>");
+    process.exit(1);
+  }
+
+  const result = await apiRequest(config, "GET", `/posts/${id}/approval`);
+
+  handleResult(result, flags, (data) => {
+    const person = (p) => (p && (p.name || p.email || p.id)) || "(unknown)";
+    const steps = data.steps || [];
+    const comments = data.comments || [];
+
+    console.log(`Approval review for post ${data.post_id || id}`);
+    console.log("─".repeat(40));
+    console.log(`Status: ${data.status}`);
+    if (data.status === "none") {
+      console.log("This post has no approval workflow.");
+      return;
+    }
+    if (data.workflow) {
+      console.log(
+        `Workflow: ${data.workflow.name}${data.workflow.id ? ` (ID: ${data.workflow.id})` : " (one-off approval)"}`
+      );
+    }
+    if (data.requested_by) {
+      console.log(
+        `Requested by: ${person(data.requested_by)}${data.requested_at ? ` at ${data.requested_at}` : ""}`
+      );
+    }
+    if (data.current_step !== null && data.current_step !== undefined) {
+      const step = steps.find((s) => s.order === data.current_step);
+      const waiting = (step?.approvers || []).filter((a) => a.status === "pending").map(person);
+      console.log(
+        `Waiting on: step ${data.current_step}${step?.name ? ` (${step.name})` : ""}${waiting.length ? `: ${waiting.join(", ")}` : ""}`
+      );
+    }
+    if (data.rejection) {
+      const r = data.rejection;
+      console.log(
+        `Rejected by: ${person(r.by)}${r.step !== null && r.step !== undefined ? ` on step ${r.step}` : ""}${r.at ? ` at ${r.at}` : ""}`
+      );
+      console.log(`Reason: ${r.reason || "(no reason given)"}`);
+    }
+
+    if (steps.length) {
+      console.log("");
+      console.log("Steps");
+      for (const s of steps) {
+        console.log(
+          `  Step ${s.order}: ${s.name || "Review"} [${s.require_mode === "all" ? "all must approve" : "any one approves"}]: ${s.status}`
+        );
+        for (const a of s.approvers || []) {
+          console.log(
+            `    ${person(a)}: ${a.status}${a.decided_at ? ` at ${a.decided_at}` : ""}${a.comment ? ` ("${a.comment}")` : ""}`
+          );
+        }
+      }
+    }
+
+    console.log("");
+    if (!comments.length) {
+      console.log("Comments: none");
+      return;
+    }
+    console.log(`Comments (${comments.length}, oldest first)`);
+    for (const c of comments) {
+      console.log(
+        `  ${c.created_at}  ${person(c.author)}${c.account ? ` [${c.account}]` : ""}: ${c.message}`
+      );
+    }
   });
 }
 
@@ -2114,6 +2201,19 @@ async function cmdInboxDelete(config, flags, positional) {
 
 // --- Webhooks ---
 
+// Every event the API accepts in --events. post.approved / post.rejected fire
+// when the review of a post in an approval workflow ends; their payload
+// carries data.approval { status, decided_by, reason } and an empty targets
+// array. The API validates the list (400 on anything else), the CLI only
+// prints it.
+const WEBHOOK_EVENTS = [
+  "post.scheduled",
+  "post.published",
+  "post.failed",
+  "post.approved",
+  "post.rejected",
+];
+
 async function cmdWebhooksList(config, flags) {
   const result = await apiRequest(config, "GET", "/webhooks");
 
@@ -2137,6 +2237,7 @@ async function cmdWebhooksCreate(config, flags) {
     console.error(
       "Usage: omnisocials webhooks:create --url \"https://...\" --events post.scheduled,post.published"
     );
+    console.error(`Events: ${WEBHOOK_EVENTS.join(", ")}`);
     process.exit(1);
   }
 
@@ -2253,6 +2354,7 @@ POSTS
   posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
   posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step)
   posts:reject <id>              Reject a post's approval workflow, stopping it immediately [--comment "..."]
+  posts:approval <id>            Read a post's approval review: steps, approvers, who rejected it and why, comments
   posts:delete <id>              Remove a post from OmniSocials (the live post stays)
 
 MEDIA
@@ -2304,7 +2406,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
 
 WEBHOOKS
   webhooks:list                  List webhooks
-  webhooks:create                Create webhook [--url --events]
+  webhooks:create                Create webhook [--url --events] (events: post.scheduled, post.published, post.failed, post.approved, post.rejected)
   webhooks:get <id>              Get webhook details
   webhooks:update <id>           Update webhook [--url --events --active]
   webhooks:delete <id>           Delete a webhook
@@ -2366,7 +2468,7 @@ PLATFORM FLAGS
   --linkedin-document-source     When the profile post's images are the unchanged pages of one uploaded PDF: original_pdf (default; LinkedIn receives the kept original file: sharp text, working links, every page) or slides (document rebuilt from the slide images). On posts:update, original_pdf reverts
   --linkedin-page-document-source  Same as above for the company page post
   --linkedin-poll-json '<json>'  Non-sponsored LinkedIn poll(s), independent per channel: {"linkedin":{"question","options":[2-4],"duration":"ONE_DAY|THREE_DAYS|SEVEN_DAYS|FOURTEEN_DAYS"},"linkedin_page":{...}}. Mutually exclusive with media/link-share on that channel. A channel key set to null (or the whole flag as 'null') on posts:update clears it.
-  --video-cover-json '<json>'    Thumbnail for a post whose media is ONE video: {"type":"frame","thumb_offset":3000} (ms into the video) or {"type":"custom","cover_url":"https://..."}, plus optional "overrides" keyed by platform (instagram, facebook, linkedin, linkedin_page, tiktok, pinterest, youtube). TikTok only takes a frame. Not shown on YouTube Shorts (YouTube displays a video frame). 'null' on posts:update removes it.
+  --video-cover-json '<json>'    Thumbnail for a post whose media is ONE video: {"type":"frame","thumb_offset":3000} (ms into the video) or {"type":"custom","cover_url":"https://..."}, plus optional "overrides" keyed by platform (instagram, facebook, linkedin, linkedin_page, tiktok, pinterest, youtube). TikTok only takes a frame. YouTube Shorts show it only on channels with custom Shorts thumbnails enabled. 'null' on posts:update removes it.
   --tiktok-title                 TikTok photo carousel title (max 90 chars; shown above the caption on Photo Mode posts; ignored on video)
   --tiktok-privacy               TikTok privacy level
   --tiktok-disable-comment       Disable TikTok comments
@@ -2413,6 +2515,7 @@ const COMMANDS = {
   "posts:retry": { handler: cmdPostsRetry },
   "posts:approve": { handler: cmdPostsApprove },
   "posts:reject": { handler: cmdPostsReject },
+  "posts:approval": { handler: cmdPostsApproval },
   "posts:delete": { handler: cmdPostsDelete },
   "media:list": { handler: cmdMediaList },
   "media:upload": { handler: cmdMediaUpload },

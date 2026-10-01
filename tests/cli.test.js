@@ -245,6 +245,258 @@ describe("CLI basics", () => {
     expect(stderr).toContain("Usage:");
   });
 
+  it("help lists posts:approval", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("posts:approval <id>");
+  });
+
+  it("posts:approval requires an id", async () => {
+    const { stderr, exitCode } = await run([
+      "posts:approval",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("posts:approval prints who rejected a post, the reason and the comments", async () => {
+    const review = {
+      post_id: "123456",
+      status: "rejected",
+      workflow: { id: "42", name: "Content approval" },
+      requested_by: { id: "u-ruby", name: "Alex" },
+      requested_at: "2026-10-01T09:00:00.000Z",
+      current_step: null,
+      steps: [
+        {
+          order: 1,
+          name: "Team review",
+          require_mode: "any",
+          status: "approved",
+          approvers: [
+            {
+              id: "u-glen",
+              name: "Sam",
+              email: "sam@example.com",
+              status: "approved",
+              decided_at: "2026-10-01T10:15:00.000Z",
+              comment: null,
+            },
+          ],
+        },
+        {
+          order: 2,
+          name: "Client approval",
+          require_mode: "all",
+          status: "rejected",
+          approvers: [
+            {
+              id: "u-ben",
+              name: "Jordan",
+              email: "jordan@example.com",
+              status: "rejected",
+              decided_at: "2026-10-01T14:30:00.000Z",
+              comment: "The image does not match the caption",
+            },
+          ],
+        },
+      ],
+      rejection: {
+        by: { id: "u-ben", name: "Jordan" },
+        reason: "The image does not match the caption",
+        at: "2026-10-01T14:30:00.000Z",
+        step: 2,
+      },
+      comments: [
+        {
+          id: "c1",
+          author: { id: "u-ben", name: "Jordan" },
+          message: "Please use the new logo",
+          account: "instagram",
+          created_at: "2026-10-01T14:28:00.000Z",
+        },
+      ],
+    };
+    await withMockServer(
+      () => ({ json: { data: review } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:approval",
+          "123456",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/posts/123456/approval");
+        expect(stdout).toContain("Status: rejected");
+        expect(stdout).toContain("Workflow: Content approval (ID: 42)");
+        expect(stdout).toContain("Requested by: Alex");
+        expect(stdout).toContain("Rejected by: Jordan on step 2");
+        expect(stdout).toContain("Reason: The image does not match the caption");
+        expect(stdout).toContain("Step 1: Team review [any one approves]: approved");
+        expect(stdout).toContain("Step 2: Client approval [all must approve]: rejected");
+        expect(stdout).toContain("Jordan [instagram]: Please use the new logo");
+        expect(stdout).not.toContain("Waiting on:");
+      }
+    );
+  });
+
+  it("posts:approval names who a pending post waits for", async () => {
+    const review = {
+      post_id: "777",
+      status: "pending",
+      workflow: { id: null, name: "One-off review" },
+      requested_by: { id: "u-ruby", name: null },
+      requested_at: "2026-10-01T08:00:00.000Z",
+      current_step: 2,
+      steps: [
+        {
+          order: 1,
+          name: "Draft",
+          require_mode: "any",
+          status: "approved",
+          approvers: [
+            { id: "u-glen", name: "Sam", email: null, status: "approved", decided_at: "2026-10-01T09:00:00.000Z", comment: null },
+          ],
+        },
+        {
+          order: 2,
+          name: "Sign-off",
+          require_mode: "all",
+          status: "pending",
+          approvers: [
+            { id: "u-ben", name: "Jordan", email: "jordan@example.com", status: "approved", decided_at: "2026-10-01T10:00:00.000Z", comment: null },
+            { id: "u-ava", name: null, email: "ava@example.com", status: "pending", decided_at: null, comment: null },
+          ],
+        },
+      ],
+      rejection: null,
+      comments: [],
+    };
+    await withMockServer(
+      () => ({ json: { data: review } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "posts:approval",
+          "777",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Status: pending");
+        expect(stdout).toContain("Workflow: One-off review (one-off approval)");
+        expect(stdout).toContain("Requested by: u-ruby");
+        expect(stdout).toContain("Waiting on: step 2 (Sign-off): ava@example.com");
+        expect(stdout).toContain("Comments: none");
+        expect(stdout).not.toContain("Rejected by:");
+      }
+    );
+  });
+
+  it("posts:approval says so when a post has no approval workflow", async () => {
+    const review = {
+      post_id: "5",
+      status: "none",
+      workflow: null,
+      requested_by: null,
+      requested_at: null,
+      current_step: null,
+      steps: [],
+      rejection: null,
+      comments: [],
+    };
+    await withMockServer(
+      () => ({ json: { data: review } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "posts:approval",
+          "5",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Status: none");
+        expect(stdout).toContain("This post has no approval workflow.");
+      }
+    );
+  });
+
+  it("posts:approval --json returns the API response unchanged", async () => {
+    const review = { post_id: "5", status: "none", workflow: null, steps: [], rejection: null, comments: [] };
+    await withMockServer(
+      () => ({ json: { data: review } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "posts:approval",
+          "5",
+          "--json",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(JSON.parse(stdout)).toEqual({ data: review });
+      }
+    );
+  });
+
+  it("posts:approval relays a 404 not_found", async () => {
+    await withMockServer(
+      () => ({ status: 404, json: { error: { code: "not_found", message: "Post not found." } } }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "posts:approval",
+          "999",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [not_found]: Post not found.");
+      }
+    );
+  });
+
+  it("posts:list points at the review for a rejected or pending post", async () => {
+    const posts = [
+      { id: "1", status: "rejected", approval_status: "rejected", content: { default: "a" }, created_at: "2026-10-01T00:00:00Z" },
+      { id: "2", status: "in_approval", approval_status: "pending", content: { default: "b" }, created_at: "2026-10-01T00:00:00Z" },
+      { id: "3", status: "scheduled", approval_status: "approved", content: { default: "c" }, created_at: "2026-10-01T00:00:00Z" },
+      { id: "4", status: "draft", approval_status: "none", content: { default: "d" }, created_at: "2026-10-01T00:00:00Z" },
+    ];
+    await withMockServer(
+      () => ({ json: { data: posts } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "posts:list",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Approval: rejected (review: posts:approval 1)");
+        expect(stdout).toContain("Approval: pending (review: posts:approval 2)");
+        expect(stdout).not.toContain("posts:approval 3");
+        expect(stdout).not.toContain("posts:approval 4");
+      }
+    );
+  });
+
   it("media:upload requires --url", async () => {
     const { stderr, exitCode } = await run([
       "media:upload",
@@ -267,6 +519,47 @@ describe("CLI basics", () => {
     ]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Usage:");
+  });
+
+  it("webhooks:create usage and help list the approval events", async () => {
+    const usage = await run([
+      "webhooks:create",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(usage.stderr).toContain("post.approved");
+    expect(usage.stderr).toContain("post.rejected");
+    const help = await run(["--help"]);
+    expect(help.stdout).toContain("post.approved");
+    expect(help.stdout).toContain("post.rejected");
+  });
+
+  it("webhooks:create sends the approval events through", async () => {
+    await withMockServer(
+      (req, body) => ({
+        status: 201,
+        json: { data: { id: "w1", url: body.url, events: body.events, secret: "s" } },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "webhooks:create",
+          "--url",
+          "https://example.com/hook",
+          "--events",
+          "post.approved,post.rejected",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/webhooks");
+        expect(calls[0].body.events).toEqual(["post.approved", "post.rejected"]);
+        expect(stdout).toContain("Events: post.approved, post.rejected");
+      }
+    );
   });
 
   it("help lists the hashtag set commands", async () => {

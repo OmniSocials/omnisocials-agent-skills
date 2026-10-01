@@ -1,13 +1,24 @@
 # Changelog
 
+## 1.30.0 (2026-10-02)
+
+### Added
+- **Read the review of a post: `posts:approval <id>`.** Calls `GET /posts/{id}/approval` (read-only, `posts:read`). Until now the CLI only showed `approval_status` on a post, so an agent saw `rejected` and not who rejected it or why. The command prints the review status (`none`, `pending`, `approved`, `rejected`), the workflow, who requested the approval, the step the post waits on with the approvers who still have to decide, who rejected it with the reason, every step with each approver's decision, and the comment thread oldest first (a comment about one channel is tagged, for example `[instagram]`; the thread includes the entries OmniSocials writes when a reviewer edits the post). `--json` returns the full object: `post_id`, `status`, `workflow`, `requested_by`, `requested_at`, `current_step`, `steps[]`, `rejection`, `comments[]`. A post without an approval workflow answers `status: "none"` with empty `steps` and `comments`. `404 not_found` when the post is not in the key's workspace.
+- **Webhook events `post.approved` and `post.rejected`.** Accepted by `webhooks:create --events` and `webhooks:update --events`, next to `post.scheduled`, `post.published` and `post.failed`. `post.approved` fires when the last step of a post's approval workflow is approved (the post moves to `scheduled`, or `posting` when its time has passed). `post.rejected` fires when an approver rejects a post. Both payloads carry `data.approval` (`status`, `decided_by`, `reason`; `reason` is null on an approval and when the approver gave none) and an empty `targets` array. The `webhooks:create` usage message and `--help` now list all five events.
+- **`posts:list` points at the review.** A post whose `approval_status` is `pending` or `rejected` prints an `Approval:` line that names `posts:approval <id>`.
+
+### Changed
+- **SKILL.md: read the review first.** New safety rule 8 and two Common Actions rows ("Why was my post rejected?", "Who is my post waiting on?"): when a post shows `approval_status` `rejected` or `pending`, the agent runs `posts:approval <id>` and tells the user who decided, the reason and the comments before it reports on the post, edits it or creates a new one. `rejected` is now listed as a `posts:list --status` value (the API always accepted it).
+- **Approval emails (API behaviour, no CLI change).** A rejection, a reviewer comment, a reviewer edit and the final approval now email the person who requested the approval, and a reply from the requester in the thread emails the reviewers. A post that still waits for approval sends its reviewers an automatic email 24 hours before its publish time. When the time passes without a decision the post does not publish, the reviewers and the requester get an email, and a late approval publishes it at once.
+
 ## 1.29.0 (2026-09-30)
 
 ### Added
-- **`--video-cover-json` on `posts:create`, `posts:create-and-publish` and `posts:update`** (sent as the top-level `video_cover` object). The thumbnail of a post whose media is one video: `{"type":"frame","thumb_offset":3000}` or `{"type":"custom","cover_url":"https://..."}`, plus optional per-platform `overrides`. Applied on Instagram, Facebook, LinkedIn Profile and Page, TikTok (frame only) and Pinterest. `null` on `posts:update` removes it. The API has taken `video_cover` since 2026-09-16; the CLI had no flag for it.
+- **`--video-cover-json` on `posts:create`, `posts:create-and-publish` and `posts:update`** (sent as the top-level `video_cover` object). The thumbnail of a post whose media is one video: `{"type":"frame","thumb_offset":3000}` or `{"type":"custom","cover_url":"https://..."}`, plus optional per-platform `overrides`. Applied on Instagram, Facebook, LinkedIn Profile and Page, TikTok (frame only), Pinterest and YouTube Shorts (channel-dependent). `null` on `posts:update` removes it. The API has taken `video_cover` since 2026-09-16; the CLI had no flag for it.
 
 ### Changed
 - **Facebook Reels longer than 90 seconds are accepted.** The API no longer refuses a Facebook Reel over 90 seconds when it is scheduled or published: a Reel now follows the 240 minute ceiling of a Facebook feed video (Meta removed the Reel length limit in June 2025). No CLI change. If Facebook refuses a length at publish time, the Facebook target fails with "Facebook did not accept the length of this video..." and the video can go out with `--type post`.
-- **SKILL.md: a cover is not shown on YouTube Shorts.** YouTube stores the cover as the video's default thumbnail, but displays a frame from the video on Shorts, so the skill tells the agent not to promise a custom Shorts thumbnail.
+- **SKILL.md: a YouTube Shorts cover depends on the channel.** YouTube shows it on Shorts only on channels where it has enabled custom Shorts thumbnails (Partner Program channels first, since July 2026); other channels display a frame from the video. The skill tells the agent to say so instead of promising it.
 
 ## 1.28.0 (2026-09-28)
 

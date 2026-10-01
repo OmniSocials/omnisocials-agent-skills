@@ -43,12 +43,13 @@ Ask your AI agent things like:
 
 ## Commands
 
-40 commands covering the full v1 API:
+48 commands covering the full v1 API:
 
 | Category | Commands |
 |----------|----------|
 | **Setup** | `setup`, `config:show` |
-| **Posts** | `posts:list`, `posts:get`, `posts:recent-platform`, `posts:create`, `posts:create-and-publish`, `posts:update`, `posts:publish`, `posts:retry`, `posts:approve`, `posts:reject`, `posts:delete` |
+| **Posts** | `posts:list`, `posts:get`, `posts:recent-platform`, `posts:create`, `posts:create-and-publish`, `posts:update`, `posts:publish`, `posts:retry`, `posts:approve`, `posts:reject`, `posts:approval`, `posts:delete` |
+| **Approval workflows** | `approval-workflows:list` |
 | **Media** | `media:list`, `media:upload`, `media:upload-base64`, `media:check`, `media:delete` |
 | **Folders** | `folders:list`, `folders:create` |
 | **Hashtag sets** | `hashtag-sets:list`, `hashtag-sets:create`, `hashtag-sets:update`, `hashtag-sets:delete` |
@@ -67,7 +68,8 @@ Ask your AI agent things like:
 - **Alt text**: Per-media accessibility descriptions, delivered to Mastodon, Bluesky, X, Pinterest, Instagram (images) and LinkedIn (images)
 - **Analytics**: Post-level, bulk, workspace overview, account-level metrics, and best posting times
 - **Social inbox**: Read and reply to DMs, comments, and mentions
-- **Webhooks**: Get notified when posts are scheduled, published, or fail
+- **Approvals**: Send a post through an approval workflow, approve or reject it, and read the review (who decided, the reason, the comments)
+- **Webhooks**: Get notified when posts are scheduled, published, fail, or are approved or rejected in an approval workflow
 - **Zero dependencies**: Uses Node.js 18+ built-in fetch
 
 ## Alternative: MCP Server

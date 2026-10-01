@@ -55,6 +55,7 @@ IMPORTANT: Follow these rules at all times.
 5. **No duplicate content** across posts unless explicitly requested.
 6. **Always confirm timezone/datetime** with the user when scheduling posts.
 7. **For bulk operations**, process one at a time and confirm between actions.
+8. **Read the approval review before you report on or change a post in review.** When a post shows `approval_status: "rejected"` or `"pending"` (post `status` `rejected` or `in_approval`), run `posts:approval <id>` first. It says who decided, the reason and what the reviewers wrote. Do not guess why a post was rejected or who it waits for, and do not edit, reschedule or recreate the post before you have read the review and told the user what it says.
 
 ## Common Actions
 
@@ -86,9 +87,12 @@ IMPORTANT: Follow these rules at all times.
 | "Delete that post" | Confirm with user, then `posts:delete <id>` |
 | "Publish my draft" | Confirm with user, then `posts:publish <id>` |
 | "Retry my failed post" | `posts:list --status failed` to find it, then `posts:retry <id>` (retries only the failed platforms; check `posts:get` for the outcome). Note: `posts:publish` refuses failed posts; retry is the correct command |
-| "Approve/reject that pending post" | `posts:list --status in_approval` to find it, then `posts:approve <id>` or `posts:reject <id> --comment "..."`. Only works if the connected user is a listed approver for the post's current workflow step (returns `forbidden` otherwise) |
+| "Approve/reject that pending post" | `posts:list --status in_approval` to find it, `posts:approval <id>` to read what the reviewers wrote so far, then `posts:approve <id>` or `posts:reject <id> --comment "..."`. Only works if the connected user is a listed approver for the post's current workflow step (returns `forbidden` otherwise) |
+| "Why was my post rejected?" / "What did the reviewer say?" | `posts:list --status rejected` to find it, then `posts:approval <id>`: it prints who rejected it, on which step, the reason and the comment thread. Relay that to the user before you change anything. A rejected post will not publish; the user can edit and resubmit it in the dashboard (Edit & Resubmit on the post), or you create a corrected post with `posts:create ... --approval-workflow <id>` once the user agrees |
+| "Who is my post waiting on?" / "Why has it not gone out yet?" | `posts:approval <id>`: the "Waiting on" line names the current step and the approvers who still have to decide. A post that is still `in_approval` when its scheduled time passes does not publish; it publishes at once when it is approved late |
 | "I want to review posts before they go out" / "Send it to me for approval" | `approval-workflows:list` to find the workflow id, then `posts:create ... --schedule <ISO8601> --approval-workflow <id>`. The post lands as `in_approval`, the approvers are notified, and it publishes at the scheduled time once the last step approves (Approvals page in the dashboard, or `posts:approve`). If no workflow exists, tell the user to create one in the dashboard under Approvals |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
+| "Tell my system when a post is approved or rejected" | `webhooks:create --url "https://..." --events post.approved,post.rejected` |
 
 ## Workflow
 
@@ -129,7 +133,7 @@ Follow this workflow when creating posts:
 
 | Command | Description |
 |---|---|
-| `posts:list` | List posts. Flags: `--status draft\|in_approval\|scheduled\|posting\|published\|failed\|warning` (`in_approval` = waiting for a reviewer in an approval workflow), `--limit`, `--offset` |
+| `posts:list` | List posts. Flags: `--status draft\|in_approval\|scheduled\|posting\|published\|failed\|warning\|rejected` (`in_approval` = waiting for a reviewer in an approval workflow, `rejected` = an approver declined it; both print an `Approval:` line that names `posts:approval <id>`), `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
 | `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights; TikTok includes average_time_watched/full_video_watched_rate/total_time_watched/favorites/reach when the workspace enabled TikTok comments). Records also carry `duration_seconds` (integer, nullable): video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and platforms that don't expose it (Instagram's media API has no duration field). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25; X defaults to 10 unless set explicitly — its API bills per returned post), `--platforms` (comma-separated filter). X results may come from a snapshot up to 24h old, refreshed right after publishing to X through OmniSocials. Requires the `analytics:read` scope. |
 | `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`, `--threads-location-id`, `--video-cover-json`, plus platform flags |
@@ -139,6 +143,7 @@ Follow this workflow when creating posts:
 | `posts:retry <id>` | Retry the failed platforms of a failed or partially failed post; succeeded platforms are never re-published; async, max 3 retries per platform. The response means the retry is queued: poll `posts:get` for the outcome. After 3 retries on a platform the API returns `max_retries_reached` and the post must be recreated. Post responses carry `retry_of` (the failed post this one retries) and `retries` (retry posts created from this one); a `published` post with empty `published_urls` and `retries` set is a resolved failure whose live URLs are on the retry post |
 | `posts:approve <id>` | Approve the current step of a post's approval workflow (`approval_status: "pending"`, post `status: "in_approval"`). The connected user must be a listed approver for the CURRENT step — steps approve in order, so being an approver on a later step returns `forbidden` until earlier steps clear. If this is the last step, the post finalizes immediately (`scheduled` or `posting`); otherwise it stays `in_approval` and the next step's approvers are notified |
 | `posts:reject <id>` | Reject a post's approval workflow. Same approver requirement as `posts:approve`. Unlike approval, this stops the WHOLE workflow immediately (not just the current step) — the post becomes `rejected`. Flag: `--comment "..."` (optional, shown to the requester and other approvers) |
+| `posts:approval <id>` | Read the review of a post that went through an approval workflow (read-only, `posts:read`). Prints the review `status` (`none`, `pending`, `approved`, `rejected`), the workflow, who requested it, the step the post waits on with the approvers who still have to decide, who rejected it with the reason, every step with each approver's decision, and the comment thread oldest first (a comment tagged `[instagram]`, `[linkedin_page]`, ... is about that channel only; the thread includes the entries OmniSocials writes when a reviewer edits the post). `--json` returns the full object: `post_id`, `status`, `workflow`, `requested_by`, `requested_at`, `current_step`, `steps[]` (`order`, `name`, `require_mode`, `status`, `approvers[]` with `id`, `name`, `email`, `status`, `decided_at`, `comment`), `rejection` (`by`, `reason`, `at`, `step`) and `comments[]` (`id`, `author`, `message`, `account`, `created_at`). A post without a workflow answers `status: "none"` with empty `steps` and `comments`. `404 not_found` when the post is not in this workspace. **Run it whenever a post shows `approval_status` `rejected` or `pending`, before you tell the user about it or edit the post** |
 | `approval-workflows:list` | List the approval workflows this workspace can use (id, name, steps with named approvers; `workspace_id` null = company-wide). Workflows are created in the dashboard (Approvals). Pass an id to `posts:create --approval-workflow <id>` (requires `--schedule`, not allowed with `--publish-now`): the post is created as `in_approval`, approvers are notified, and it publishes at the scheduled time once the last step approves. Errors: `404 workflow_not_found`, `400 validation_error` (no `--schedule`, or the workflow has no approvers on step 1) |
 | `posts:delete <id>` | Remove a post from OmniSocials (cannot be undone). Never deletes the live post on a platform |
 
@@ -222,7 +227,7 @@ Read and reply to DMs, comments, and mentions across connected accounts. Every c
 | Command | Description |
 |---|---|
 | `webhooks:list` | List all webhooks |
-| `webhooks:create` | Create a webhook. Flags: `--url` (required), `--events` (required, comma-separated: `post.scheduled`, `post.published`, `post.failed`) |
+| `webhooks:create` | Create a webhook. Flags: `--url` (required), `--events` (required, comma-separated: `post.scheduled`, `post.published`, `post.failed`, `post.approved`, `post.rejected`). `post.approved` fires when the last step of a post's approval workflow is approved (the post moves to `scheduled`, or `posting` when its time has passed); `post.rejected` fires when an approver rejects a post. Both carry `data.approval` (`status`, `decided_by` = the approver's user id, `reason` = string or null) and an empty `targets` array; the full review is in `posts:approval <id>` |
 | `webhooks:get <id>` | Get webhook details |
 | `webhooks:update <id>` | Update webhook. Flags: `--url`, `--events`, `--active true\|false` |
 | `webhooks:delete <id>` | Delete a webhook |
@@ -278,7 +283,7 @@ All commands support these flags:
 | `--youtube-category-id` | YouTube category ID |
 | `--youtube-made-for-kids` | Made for kids flag |
 
-A custom thumbnail cannot be set on a Short through OmniSocials: YouTube displays a frame from the video on Shorts (see **Video cover**). The user sets a Shorts thumbnail in YouTube Studio or the YouTube app.
+A custom thumbnail for a Short goes through `--video-cover-json` (see **Video cover**). YouTube shows it on Shorts only on channels where it has enabled custom Shorts thumbnails (Partner Program channels first); other channels show a frame from the video.
 
 #### Instagram
 | Flag | Description |
@@ -345,14 +350,14 @@ omnisocials posts:create \
 ```
 
 #### Video cover
-The thumbnail of a post whose media is **one video** (feed video or reel). One object for every platform that takes a cover: Instagram, Facebook, LinkedIn Profile and Page, TikTok and Pinterest.
+The thumbnail of a post whose media is **one video** (feed video or reel). One object for every platform that takes a cover: Instagram, Facebook, LinkedIn Profile and Page, TikTok, Pinterest and YouTube Shorts.
 
 | Flag | Description |
 |---|---|
 | `--video-cover-json` | Full `video_cover` JSON object: `{"type": "frame", "thumb_offset": 3000}` (milliseconds into the video) or `{"type": "custom", "cover_url": "https://..."}` (JPEG/PNG), plus an optional `"overrides"` object keyed by platform (`instagram`, `facebook`, `linkedin`, `linkedin_page`, `tiktok`, `pinterest`, `youtube`) that wins over the base cover for that platform |
 
 - **TikTok only takes a frame.** A `custom` cover is skipped there, so add `"overrides": {"tiktok": {"type": "frame", "thumb_offset": 2000}}` when the user wants a specific TikTok frame.
-- **Not shown on YouTube Shorts.** YouTube stores the cover as the video's default thumbnail, but displays a frame from the video on the Shorts tab, in the Shorts feed and in link previews. Do not promise a custom Shorts thumbnail: the user sets one in YouTube Studio or picks a frame in the YouTube app.
+- **YouTube Shorts: depends on the channel.** YouTube shows the cover on Shorts only on channels where it has enabled custom Shorts thumbnails (rolling out since July 2026, Partner Program channels first). On other channels YouTube stores it but displays a frame from the video. Say that it depends on the channel; do not promise it.
 - The older per-platform flags (`--instagram-cover-url`, `--instagram-thumb-offset`, `--tiktok-video-cover-timestamp-ms`, `--pinterest-video-cover`) keep working and win over the base cover for their platform.
 - On `posts:update <id>` the stored cover is replaced wholesale; pass `--video-cover-json null` to remove it. `posts:get` returns it as `video_cover`.
 
@@ -604,6 +609,13 @@ link: https://example.com/shop"
 ```
 ./scripts/omnisocials.js analytics:overview --start-date 2026-03-01 --end-date 2026-03-31
 ```
+
+### Find out why a post was rejected, or who it waits for
+```
+./scripts/omnisocials.js posts:list --status rejected
+./scripts/omnisocials.js posts:approval 123456
+```
+Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its approvers, and the reviewers' comments. For a post that is still in review (`posts:list --status in_approval`) the same command prints `Waiting on: step 2 (Client approval): Jordan`. Tell the user what the review says before you edit the post or create a new one.
 
 ### Create a webhook for post notifications
 ```
