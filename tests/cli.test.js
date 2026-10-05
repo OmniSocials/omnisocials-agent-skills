@@ -1152,6 +1152,474 @@ describe("Inbox work queue (mock API)", () => {
   });
 });
 
+const PRODUCT_A = "813744226420795884";
+const PRODUCT_B = "813744226420795885";
+
+const CATALOG_PRODUCTS = {
+  products: [
+    {
+      pin_id: PRODUCT_A,
+      title: "Blue ribbed top",
+      description: null,
+      link: "https://shop.example.com/products/blue-ribbed-top",
+      image_url: "https://i.pinimg.com/400x300/aa/bb/cc/example.jpg",
+      price: 24.99,
+      currency: "EUR",
+      availability: "IN_STOCK",
+      item_id: "TOP-BLUE-M",
+    },
+    {
+      pin_id: PRODUCT_B,
+      title: "Grey wool scarf",
+      description: null,
+      link: "https://shop.example.com/products/grey-wool-scarf",
+      image_url: null,
+      price: null,
+      currency: null,
+      availability: null,
+      item_id: null,
+    },
+  ],
+  bookmark: "next_page_1",
+  source: "catalog",
+  catalog_access: true,
+  product_groups: [
+    { id: "443727193917", name: "All Products" },
+    { id: "443727193918", name: "Autumn" },
+  ],
+  product_group_id: "443727193917",
+};
+
+describe("Pinterest product tagging (mock API)", () => {
+  it("help lists the Pinterest commands and --pinterest-product-tags", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("pinterest:products");
+    expect(stdout).toContain("pinterest:validate <pin>");
+    expect(stdout).toContain("--pinterest-product-tags");
+  });
+
+  it("posts:create sends --pinterest-product-tags as pinterest.product_tags, ids as strings and links unchanged", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Autumn outfit",
+          "--channels",
+          "pinterest",
+          "--pinterest-board-id",
+          "board_1",
+          "--pinterest-product-tags",
+          `${PRODUCT_A}, https://www.pinterest.com/pin/${PRODUCT_B}/`,
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.pinterest).toEqual({
+          board_id: "board_1",
+          product_tags: [PRODUCT_A, `https://www.pinterest.com/pin/${PRODUCT_B}/`],
+        });
+      }
+    );
+  });
+
+  it("posts:create-and-publish sends --pinterest-product-tags", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "posting" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:create-and-publish",
+          "--text",
+          "Autumn outfit",
+          "--channels",
+          "pinterest",
+          "--pinterest-board-id",
+          "board_1",
+          "--pinterest-product-tags",
+          PRODUCT_A,
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create-and-publish");
+        expect(calls[0].body.pinterest.product_tags).toEqual([PRODUCT_A]);
+      }
+    );
+  });
+
+  it("posts:update sends --pinterest-product-tags, and leaves product_tags out when the flag is not given", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const withTags = await run([
+          "posts:update",
+          "p1",
+          "--pinterest-board-id",
+          "board_1",
+          "--pinterest-product-tags",
+          `${PRODUCT_A},${PRODUCT_B}`,
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(withTags.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/posts/p1");
+        expect(calls[0].body.pinterest).toEqual({
+          board_id: "board_1",
+          product_tags: [PRODUCT_A, PRODUCT_B],
+        });
+
+        const withoutTags = await run([
+          "posts:update",
+          "p1",
+          "--pinterest-board-id",
+          "board_1",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(withoutTags.exitCode).toBe(0);
+        expect(calls[1].body.pinterest).toEqual({ board_id: "board_1" });
+      }
+    );
+  });
+
+  it("posts:create rejects --pinterest-product-tags without a value before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { stderr, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Autumn outfit",
+          "--pinterest-product-tags",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("--pinterest-product-tags needs a comma-separated list");
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("posts:list prints what Pinterest did with the product tags", async () => {
+    const posts = [
+      {
+        id: "1",
+        status: "published",
+        content: { default: "a" },
+        created_at: "2026-10-05T00:00:00Z",
+        pinterest: {
+          board_id: "board_1",
+          product_tags: [PRODUCT_A, PRODUCT_B],
+          product_tags_result: {
+            requested: 2,
+            tagged: [PRODUCT_A],
+            skipped: [{ pin_id: PRODUCT_B, reason: "PIN_IS_PRIVATE" }],
+            error: null,
+          },
+        },
+      },
+      {
+        id: "2",
+        status: "published",
+        content: { default: "b" },
+        created_at: "2026-10-05T00:00:00Z",
+        pinterest: {
+          board_id: "board_1",
+          product_tags: [PRODUCT_A],
+          product_tags_result: { requested: 1, tagged: [], skipped: [], error: "Pinterest did not answer" },
+        },
+      },
+      {
+        id: "3",
+        status: "scheduled",
+        content: { default: "c" },
+        created_at: "2026-10-05T00:00:00Z",
+        pinterest: { board_id: "board_1", product_tags: [PRODUCT_A] },
+      },
+    ];
+    await withMockServer(
+      () => ({ json: { data: posts } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "posts:list",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain(
+          `Pinterest products: 1 of 2 tagged (skipped: ${PRODUCT_B} PIN_IS_PRIVATE)`
+        );
+        expect(stdout).toContain("Pinterest products: 0 of 1 tagged (error: Pinterest did not answer)");
+        expect(stdout.match(/Pinterest products:/g)).toHaveLength(2);
+      }
+    );
+  });
+
+  it("pinterest:products passes its flags through and prints the products, groups and next page", async () => {
+    await withMockServer(
+      () => ({ json: CATALOG_PRODUCTS }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "pinterest:products",
+          "--source",
+          "catalog",
+          "--product-group-id",
+          "443727193917",
+          "--bookmark",
+          "page_0",
+          "--page-size",
+          "50",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/pinterest/products");
+        const q = calls[0].query;
+        expect(q.get("source")).toBe("catalog");
+        expect(q.get("product_group_id")).toBe("443727193917");
+        expect(q.get("bookmark")).toBe("page_0");
+        expect(q.get("page_size")).toBe("50");
+        expect(stdout).toContain("Pinterest products (2, source: catalog)");
+        expect(stdout).toContain(
+          `pin_id: ${PRODUCT_A}  Blue ribbed top  (24.99 EUR, IN_STOCK, item TOP-BLUE-M)`
+        );
+        expect(stdout).toContain("https://shop.example.com/products/blue-ribbed-top");
+        expect(stdout).toContain(`pin_id: ${PRODUCT_B}  Grey wool scarf\n`);
+        expect(stdout).toContain("All Products (443727193917) [shown], Autumn (443727193918)");
+        expect(stdout).toContain('--bookmark "next_page_1"');
+        expect(stdout).toContain("--pinterest-product-tags <id,id> (max 24 per Pin)");
+      }
+    );
+  });
+
+  it("pinterest:products sends no query when no flag is given", async () => {
+    await withMockServer(
+      () => ({ json: { products: [], bookmark: null, source: "pins", catalog_access: false } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "pinterest:products",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect([...calls[0].query.keys()]).toEqual([]);
+        expect(stdout).toContain("No product Pins found on this Pinterest account.");
+        expect(stdout).toContain("Connect catalog");
+      }
+    );
+  });
+
+  it("pinterest:products points at the bookmark when a scan found no product Pin but more Pins are left", async () => {
+    await withMockServer(
+      () => ({ json: { products: [], bookmark: "scan_2", source: "pins", catalog_access: false } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "pinterest:products",
+          "--source",
+          "pins",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("No product Pins in this batch.");
+        expect(stdout).toContain('--bookmark "scan_2"');
+        expect(stdout).not.toContain("No product Pins found on this Pinterest account.");
+      }
+    );
+  });
+
+  it("pinterest:products prints an HTTP 200 error object as an error, not as an empty list", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          error: {
+            code: "pinterest_catalog_access_required",
+            message: "This Pinterest connection cannot read the product catalog.",
+          },
+          catalog_access: false,
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, stderr, exitCode } = await run([
+          "pinterest:products",
+          "--source",
+          "catalog",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain(
+          "Error [pinterest_catalog_access_required]: This Pinterest connection cannot read the product catalog."
+        );
+        expect(stdout).not.toContain("No product");
+      }
+    );
+  });
+
+  it("pinterest:products relays a 400 validation_error", async () => {
+    await withMockServer(
+      () => ({
+        status: 400,
+        json: { error: { code: "validation_error", message: "product_group_id is not a product group of the connected account." } },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "pinterest:products",
+          "--product-group-id",
+          "1",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [validation_error]");
+      }
+    );
+  });
+
+  it("pinterest:products rejects an unknown --source before calling the API", async () => {
+    await withMockServer(
+      () => ({ json: CATALOG_PRODUCTS }),
+      async (baseUrl, calls) => {
+        const { stderr, exitCode } = await run([
+          "pinterest:products",
+          "--source",
+          "shop",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Usage:");
+        expect(stderr).toContain("--source catalog|pins");
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("pinterest:products --json returns the API response unchanged", async () => {
+    await withMockServer(
+      () => ({ json: CATALOG_PRODUCTS }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "pinterest:products",
+          "--json",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(JSON.parse(stdout)).toEqual(CATALOG_PRODUCTS);
+      }
+    );
+  });
+
+  it("pinterest:validate requires a Pin ID or Pin link", async () => {
+    const { stderr, exitCode } = await run([
+      "pinterest:validate",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+  });
+
+  it("pinterest:validate sends the id and prints a valid product Pin", async () => {
+    const link = `https://www.pinterest.com/pin/${PRODUCT_A}/`;
+    await withMockServer(
+      () => ({
+        json: {
+          valid: true,
+          pin_id: PRODUCT_A,
+          title: "Blue ribbed top",
+          link: "https://shop.example.com/products/blue-ribbed-top",
+          image_url: null,
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "pinterest:validate",
+          link,
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/pinterest/products/validate");
+        expect(calls[0].query.get("id")).toBe(link);
+        expect(stdout).toContain(`Valid product Pin: ${PRODUCT_A}  Blue ribbed top`);
+        expect(stdout).toContain(`--pinterest-product-tags ${PRODUCT_A}`);
+      }
+    );
+  });
+
+  it("pinterest:validate prints why a Pin is not valid, and says so when the check could not run", async () => {
+    const answers = [
+      {
+        valid: false,
+        pin_id: PRODUCT_B,
+        reason: "This Pin is not a product Pin.",
+      },
+      {
+        valid: false,
+        unverified: true,
+        pin_id: PRODUCT_B,
+        reason: "Pinterest did not answer. The publish step is the final check.",
+      },
+    ];
+    await withMockServer(
+      () => ({ json: answers.shift() }),
+      async (baseUrl) => {
+        const args = ["pinterest:validate", PRODUCT_B, "--api-key", MOCK_KEY, "--base-url", baseUrl];
+        const invalid = await run(args);
+        expect(invalid.exitCode).toBe(0);
+        expect(invalid.stdout).toContain(`Not valid (${PRODUCT_B}): This Pin is not a product Pin.`);
+
+        const unverified = await run(args);
+        expect(unverified.exitCode).toBe(0);
+        expect(unverified.stdout).toContain(
+          `Not checked (${PRODUCT_B}): Pinterest did not answer. The publish step is the final check.`
+        );
+      }
+    );
+  });
+});
+
 describe("config:show with env var", () => {
   it("reads API key from env", async () => {
     const testKey = ["omsk", "test", "fakekeyfortesting"].join("_");

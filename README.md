@@ -43,7 +43,7 @@ Ask your AI agent things like:
 
 ## Commands
 
-48 commands covering the full v1 API:
+50 commands covering the full v1 API:
 
 | Category | Commands |
 |----------|----------|
@@ -55,6 +55,7 @@ Ask your AI agent things like:
 | **Hashtag sets** | `hashtag-sets:list`, `hashtag-sets:create`, `hashtag-sets:update`, `hashtag-sets:delete` |
 | **Accounts** | `accounts:list`, `accounts:get` |
 | **Locations & audio** | `locations:search`, `audio:search` |
+| **Pinterest products** | `pinterest:products`, `pinterest:validate` |
 | **Analytics** | `analytics:post`, `analytics:posts`, `analytics:overview`, `analytics:accounts`, `analytics:best-times` |
 | **Inbox** | `inbox:list`, `inbox:next`, `inbox:messages`, `inbox:read`, `inbox:reply`, `inbox:hide`, `inbox:delete` |
 | **Webhooks** | `webhooks:list`, `webhooks:create`, `webhooks:get`, `webhooks:update`, `webhooks:delete`, `webhooks:rotate-secret` |
@@ -63,7 +64,7 @@ Ask your AI agent things like:
 
 - **11 platforms (12 channels)** from one tool
 - **Posts, Stories, and Reels** with platform-specific options
-- **Platform-specific controls**: Pinterest boards, YouTube metadata, TikTok privacy, Instagram covers, X reply settings
+- **Platform-specific controls**: Pinterest boards and product tags, YouTube metadata, TikTok privacy, Instagram covers, X reply settings
 - **Per-platform media**: Different images/videos for different platforms in the same post
 - **Alt text**: Per-media accessibility descriptions, delivered to Mastodon, Bluesky, X, Pinterest, Instagram (images) and LinkedIn (images)
 - **Analytics**: Post-level, bulk, workspace overview, account-level metrics, and best posting times

@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.30.0";
+const VERSION = "1.31.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -178,6 +178,20 @@ function exitWithError(message) {
 
 // ─── Platform Option Assembly ───────────────────────────────────────────────
 
+// --pinterest-product-tags: comma-separated product Pin IDs or Pin links
+// (https://www.pinterest.com/pin/<id>/). The values stay strings: a Pin ID has
+// 18+ digits and loses its last digits as a number. The API checks the entries
+// and the limit of 24; the CLI only refuses a flag without a value.
+function splitProductTags(value) {
+  const tags = splitComma(value === true ? "" : value);
+  if (!tags || !tags.length) {
+    exitWithError(
+      '--pinterest-product-tags needs a comma-separated list of product Pin IDs or Pin links, e.g. "813744226420795884,813744226420795885" (find them with pinterest:products)'
+    );
+  }
+  return tags;
+}
+
 function assemblePlatformOptions(flags) {
   const platforms = {};
 
@@ -188,6 +202,10 @@ function assemblePlatformOptions(flags) {
       "pinterest-link": "link",
       "pinterest-video-cover": "video_cover",
       "pinterest-alt-text": "alt_text",
+      // Products to tag on the Pin (max 24, own product Pins only; ids from
+      // `pinterest:products`). Tagged right after the Pin is published; a
+      // product Pinterest refuses never fails the post.
+      "pinterest-product-tags": { key: "product_tags", transform: splitProductTags },
     },
     youtube: {
       "youtube-title": "title",
@@ -476,6 +494,25 @@ function postContentString(content) {
   return content.default || Object.values(content).find((v) => typeof v === "string") || "";
 }
 
+// One line for `pinterest.product_tags_result`, which a published post carries
+// when it had product tags: { requested, tagged: [pin_id], skipped:
+// [{ pin_id, reason }], error }. `reason` is Pinterest's code (PIN_MISSING,
+// PIN_IS_PRIVATE, PRODUCT_METADATA_MISSING, PIN_NOT_FROM_VERIFIED_DOMAIN,
+// PIN_NOT_FROM_SAME_USER_AS_HERO_PIN); `error` is set when the tag request
+// itself failed. A refused product never fails the post.
+function formatProductTagsResult(result) {
+  const tagged = Array.isArray(result.tagged) ? result.tagged : [];
+  const skipped = Array.isArray(result.skipped) ? result.skipped : [];
+  const requested =
+    typeof result.requested === "number" ? result.requested : tagged.length + skipped.length;
+  const notes = [];
+  if (skipped.length) {
+    notes.push(`skipped: ${skipped.map((s) => `${s.pin_id} ${s.reason}`).join(", ")}`);
+  }
+  if (result.error) notes.push(`error: ${result.error}`);
+  return `${tagged.length} of ${requested} tagged${notes.length ? ` (${notes.join("; ")})` : ""}`;
+}
+
 function formatPost(post, index) {
   const lines = [];
   lines.push(`#${index + 1}  ID: ${post.id}`);
@@ -511,6 +548,11 @@ function formatPost(post, index) {
         lines.push(`      ${n}. ${slide.url || slide.native_post_id || "(no url)"}`);
       });
     }
+  }
+  // Pinterest product tags: what Pinterest did with them after the Pin went live.
+  const productTagsResult = post.pinterest && post.pinterest.product_tags_result;
+  if (productTagsResult && typeof productTagsResult === "object") {
+    lines.push(`    Pinterest products: ${formatProductTagsResult(productTagsResult)}`);
   }
   // Retry lineage: retry_of = the failed post this one retries; retries = retry
   // posts created from this one. A "published" post with empty published_urls
@@ -1589,6 +1631,139 @@ async function cmdLocationsSearch(config, flags, positional) {
   });
 }
 
+// --- Pinterest products (product tagging) ---
+// A product tag is the Pin ID of one of the account's own product Pins.
+// pinterest:products lists them: --source catalog reads the Pinterest catalog
+// (with price and availability; needs catalog access on the connection),
+// --source pins reads the account's own Pins and returns the ones Pinterest
+// marks as product Pins (works on every connection). Without --source the API
+// uses catalog when the connection has catalog access, else pins.
+// pinterest:validate checks one Pin ID or Pin link. Both answer without a
+// `data` wrapper.
+
+async function cmdPinterestProducts(config, flags) {
+  const source = flags.source;
+  if (source !== undefined && !["catalog", "pins"].includes(source)) {
+    console.error(
+      "Usage: omnisocials pinterest:products [--source catalog|pins --product-group-id <id> --bookmark <bookmark> --page-size <1-100>]"
+    );
+    process.exit(1);
+  }
+
+  const result = await apiRequest(config, "GET", "/pinterest/products", undefined, {
+    source,
+    product_group_id: flags["product-group-id"],
+    bookmark: flags.bookmark,
+    page_size: flags["page-size"],
+  });
+
+  // Answers { products, bookmark, source, catalog_access, product_groups?,
+  // product_group_id? } or { error: { code, message } }. The error comes as
+  // HTTP 400 (validation_error) or as HTTP 200 with code
+  // pinterest_not_connected | pinterest_catalog_access_required |
+  // platform_error and no `products` key, like the Threads location search.
+  // Print it as an error, never as an empty list.
+  if (result.error) {
+    const err = result.error;
+    if (flags.json) {
+      outputJson(result);
+    } else {
+      console.error(`Error [${err.code || "error"}]: ${err.message || err}`);
+    }
+    process.exit(1);
+  }
+  if (flags.json) {
+    outputJson(result);
+    return;
+  }
+
+  const products = Array.isArray(result.products) ? result.products : [];
+  const fromCatalog = result.source === "catalog";
+  const groups = Array.isArray(result.product_groups) ? result.product_groups : [];
+  const printGroups = () => {
+    if (groups.length < 2) return;
+    const names = groups.map(
+      (g) =>
+        `${g.name || "Unnamed"} (${g.id})${String(g.id) === String(result.product_group_id) ? " [shown]" : ""}`
+    );
+    console.log(`Product groups (pick another with --product-group-id): ${names.join(", ")}`);
+  };
+
+  if (!products.length) {
+    // The pins source scans up to 250 Pins per call, so a call can find no
+    // product Pin while Pinterest still has more Pins to scan.
+    if (result.bookmark) {
+      console.log(
+        `No product Pins in this batch. There are more Pins to scan: run the same command with --bookmark "${result.bookmark}".`
+      );
+      return;
+    }
+    console.log(
+      fromCatalog
+        ? "No products found in this product group of the Pinterest catalog."
+        : "No product Pins found on this Pinterest account."
+    );
+    printGroups();
+    if (!fromCatalog && result.catalog_access === false) {
+      console.log(
+        "To list the products of a Pinterest catalog, give catalog access one time: in the OmniSocials composer open the Pinterest options, select Add products, then Connect catalog."
+      );
+    }
+    return;
+  }
+
+  console.log(`Pinterest products (${products.length}, source: ${result.source})`);
+  console.log("─".repeat(40));
+  for (const p of products) {
+    const bits = [];
+    if (p.price !== null && p.price !== undefined) {
+      bits.push(`${p.price}${p.currency ? ` ${p.currency}` : ""}`);
+    }
+    if (p.availability) bits.push(p.availability);
+    if (p.item_id) bits.push(`item ${p.item_id}`);
+    console.log(
+      `pin_id: ${p.pin_id}  ${truncate(p.title, 60) || "Untitled"}${bits.length ? `  (${bits.join(", ")})` : ""}`
+    );
+    if (p.link) console.log(`  ${p.link}`);
+  }
+  printGroups();
+  if (result.bookmark) {
+    console.log(`\nMore: run the same command with --bookmark "${result.bookmark}" for the next page.`);
+  }
+  console.log(
+    "\nPass ids to posts:create/posts:update with --pinterest-product-tags <id,id> (max 24 per Pin)."
+  );
+}
+
+async function cmdPinterestValidate(config, flags, positional) {
+  const id = typeof flags.id === "string" ? flags.id : positional[0];
+  if (!id) {
+    exitWithError(
+      "Usage: omnisocials pinterest:validate <pin-id-or-link>  (a Pin ID or https://www.pinterest.com/pin/<id>/; pin.it short links do not work)"
+    );
+  }
+
+  const result = await apiRequest(config, "GET", "/pinterest/products/validate", undefined, { id });
+  // Answers { valid, pin_id, title?, link?, image_url?, unverified?, reason? }
+  // with no `data` wrapper. unverified = the check could not run (no Pinterest
+  // account, Pinterest did not answer, or it did not say if the Pin is a
+  // product Pin); the publish step is then the final check.
+  handleResult(result, flags, () => {
+    const pin = result.pin_id ? ` (${result.pin_id})` : "";
+    if (result.valid) {
+      console.log(`Valid product Pin: ${result.pin_id}${result.title ? `  ${result.title}` : ""}`);
+      if (result.link) console.log(`  ${result.link}`);
+      console.log(`Tag it with: posts:create ... --pinterest-product-tags ${result.pin_id}`);
+      return;
+    }
+    if (result.unverified) {
+      console.log(`Not checked${pin}: ${result.reason || "the check could not run."}`);
+      return;
+    }
+    console.log(`Not valid${pin}: ${result.reason || "this Pin cannot be tagged as a product."}`);
+  });
+}
+
 // --- Audio (Instagram Reel music) ---
 
 async function cmdAudioSearch(config, flags, positional) {
@@ -2381,6 +2556,10 @@ HASHTAG SETS
 LOCATIONS
   locations:search "<name>"      Find location ids for a place [--platform instagram|threads --latitude --longitude]
 
+PINTEREST
+  pinterest:products             List the product Pins of the connected Pinterest account, to tag on a Pin [--source catalog|pins --product-group-id --bookmark --page-size]
+  pinterest:validate <pin>       Check that a Pin ID or Pin link is a product Pin you can tag
+
 AUDIO
   audio:search ["<song/artist>"] Instagram Reel music from Meta's licensed catalog; no query = trending [--type music|original_sound]
 
@@ -2444,6 +2623,7 @@ PLATFORM FLAGS
   --pinterest-link               Pinterest pin link
   --pinterest-video-cover        Pinterest video cover image URL
   --pinterest-alt-text           Pinterest pin alt text
+  --pinterest-product-tags       Pinterest products to tag on the Pin: comma-separated Pin IDs or Pin links of your own product Pins (max 24; from pinterest:products)
   --youtube-title                YouTube video title
   --youtube-privacy              YouTube privacy (public/private/unlisted)
   --youtube-tags                 YouTube tags (comma-separated)
@@ -2491,6 +2671,8 @@ EXAMPLES
   omnisocials posts:create --text "What should we build next?" --channels linkedin --linkedin-poll-json '{"linkedin":{"question":"What should we build next?","options":["Mobile app","Public API","More integrations"],"duration":"SEVEN_DAYS"}}'
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
   omnisocials locations:search "Blue Bottle Coffee"
+  omnisocials pinterest:products
+  omnisocials posts:create --text "Autumn outfit" --channels pinterest --media-urls "https://example.com/outfit.jpg" --pinterest-board-id <board_id> --pinterest-product-tags 813744226420795884,813744226420795885
   omnisocials inbox:list --platform instagram --unread
   omnisocials inbox:next --platform instagram
   omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --message-id <message-id> --next
@@ -2530,6 +2712,8 @@ const COMMANDS = {
   "hashtag-sets:update": { handler: cmdHashtagSetsUpdate },
   "hashtag-sets:delete": { handler: cmdHashtagSetsDelete },
   "locations:search": { handler: cmdLocationsSearch },
+  "pinterest:products": { handler: cmdPinterestProducts },
+  "pinterest:validate": { handler: cmdPinterestValidate },
   "audio:search": { handler: cmdAudioSearch },
   "accounts:list": { handler: cmdAccountsList },
   "accounts:get": { handler: cmdAccountsGet },

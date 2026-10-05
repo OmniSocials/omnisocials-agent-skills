@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.31.0 (2026-10-05)
+
+### Added
+- **Pinterest product tags: `--pinterest-product-tags` on `posts:create`, `posts:create-and-publish` and `posts:update`** (sent as `pinterest.product_tags`). A comma-separated list of product Pins to tag on the Pin, each as a Pin ID or a Pin link (`https://www.pinterest.com/pin/<id>/`); the API stores and returns Pin IDs. Max 24 per Pin: more than 24, or an entry that is not a Pin ID or Pin link, answers `400 validation_error`. Pinterest accepts a product only when its Pin is public, belongs to the same Pinterest account and links to a website that account claimed; products of other merchants cannot be tagged. The tags are added right after the Pin is published, and a product that Pinterest refuses never fails the post. On `posts:update` the `pinterest` object replaces the stored one, so pass the other Pinterest flags again; leaving `--pinterest-product-tags` out removes the tags. The CLI refuses the flag without a value before it calls the API.
+- **List the products you can tag: `pinterest:products`.** Calls `GET /pinterest/products` (`posts:read`). Flags: `--source catalog|pins`, `--product-group-id`, `--bookmark`, `--page-size` (1 to 100, default 25, catalog only). `catalog` reads the Pinterest catalog (price, currency, availability, item id, and the product groups of the account) and needs catalog access on the connection, given one time in the OmniSocials composer (Pinterest options, Add products, Connect catalog). `pins` reads the account's own Pins and returns the ones Pinterest marks as product Pins. Without `--source` the API uses `catalog` when the connection has catalog access, else `pins`. One `pins` call scans up to 250 Pins, so a call can find no product Pin and still print a `--bookmark` value for the next call. A problem the API answers as HTTP 200 with an `error` object (`pinterest_not_connected`, `pinterest_catalog_access_required`, `platform_error`) is printed as `Error [code]: message` with exit code 1, not as an empty list.
+- **Check one Pin: `pinterest:validate <pin-id-or-link>`.** Calls `GET /pinterest/products/validate` (`posts:read`). Prints `Valid product Pin: <pin_id>`, `Not valid (<pin_id>): <reason>`, or `Not checked (<pin_id>): <reason>` when the check could not run (the publish step is then the final check). `--json` returns `valid`, `pin_id`, `title`, `link`, `image_url`, `unverified`, `reason`.
+- **`posts:list` prints what Pinterest did with the tags.** A published post that had product tags carries `pinterest.product_tags_result` (`requested`, `tagged`, `skipped` with `pin_id` and `reason`, `error`); the CLI prints it as `Pinterest products: 1 of 2 tagged (skipped: <pin_id> PIN_IS_PRIVATE)`. Reason codes: `PIN_MISSING`, `PIN_IS_PRIVATE`, `PRODUCT_METADATA_MISSING` (not a product Pin), `PIN_NOT_FROM_VERIFIED_DOMAIN` (product link not on a claimed website), `PIN_NOT_FROM_SAME_USER_AS_HERO_PIN` (Pin of another account). `posts:get` shows the full object.
+
+### Changed
+- **SKILL.md: Pinterest product tagging.** New "Pinterest products" command section, the `--pinterest-product-tags` flag with its limits (max 24, own product Pins only, a refused product never fails the post), a Common Actions row, an example (list products, then create a Pin with product tags) and the two Pinterest error codes.
+
 ## 1.30.0 (2026-10-02)
 
 ### Added

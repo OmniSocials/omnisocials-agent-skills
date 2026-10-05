@@ -73,6 +73,7 @@ IMPORTANT: Follow these rules at all times.
 | "Post a thread to Threads" | `posts:create --channels <threads_id> --threads-thread "part 1 || part 2 || part 3"` |
 | "Tag a location on Instagram" | `locations:search "<place name>"`, then `posts:create ... --location-id <id>` |
 | "Tag a location on Threads" | `locations:search "<place name>" --platform threads`, then `posts:create ... --threads-location-id <id>` (rolling out) |
+| "Tag products on a Pinterest Pin" | `pinterest:products` to list the account's product Pins, then `posts:create ... --pinterest-board-id <id> --pinterest-product-tags <pin_id,pin_id>` (max 24, own product Pins only; a product Pinterest refuses never fails the post) |
 | "Post a reel with music" | `audio:search "<song or artist>"` (no query = trending), then `posts:create ... --type reel --instagram-audio-id <id>` |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
 | "Any new DMs / comments?" | `inbox:list --unread` (add `--platform` / `--type dm\|comment\|mention` to filter; `--unanswered` for only the ones still waiting for a reply). Needs the `inbox:read` scope |
@@ -183,6 +184,15 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 |---|---|
 | `locations:search "<name>"` | Search taggable locations (min 2 chars). Default `--platform instagram` searches Facebook Places and returns `location_id` values for `posts:create --location-id`. `--platform threads` searches Threads locations and returns ids for `posts:create --threads-location-id`; it also accepts `--latitude` + `--longitude` instead of a name. The two id namespaces are DIFFERENT: never pass an Instagram `location_id` as a Threads one or vice versa. Threads location search is rolling out; until Meta approves the permission the API answers `not_available`, and older Threads connections answer `threads_reauth_required` until reconnected. |
 
+### Pinterest products
+
+Product tags put products on a Pin, so people can shop the items in the image. A tag is the Pin ID of a product Pin of the connected Pinterest account. Pinterest accepts a product only when its Pin is public, belongs to the same Pinterest account and links to a website that account claimed; products of other merchants cannot be tagged. Pass the Pin IDs to `posts:create --pinterest-product-tags` (max 24 per Pin). Both commands need the `posts:read` scope.
+
+| Command | Description |
+|---|---|
+| `pinterest:products` | List the product Pins of the connected Pinterest account. Every row starts with the `pin_id` that `--pinterest-product-tags` takes. Flags: `--source catalog\|pins`, `--product-group-id <id>`, `--bookmark <bookmark>`, `--page-size <1-100>` (default 25, catalog only). `--source catalog` reads the Pinterest catalog: rows carry price, currency, availability and the merchant's item id, and the output lists the product groups so another one can be picked with `--product-group-id`. It needs catalog access on the Pinterest connection, which the user gives one time in the OmniSocials composer (Pinterest options, Add products, Connect catalog). `--source pins` reads the account's own Pins and returns the ones Pinterest marks as product Pins; it works on every connection. Without `--source` the API uses `catalog` when the connection has catalog access, else `pins`. One `pins` call scans up to 250 Pins, so it can print "No product Pins in this batch" together with a `--bookmark` value: run it again with that bookmark until no bookmark is printed. A problem is printed as `Error [code]: message`, never as an empty list: `pinterest_not_connected` (no Pinterest account on the workspace), `pinterest_catalog_access_required` (`--source catalog` without catalog access: ask the user to connect the catalog, or use `--source pins`), `platform_error` (Pinterest did not answer or refused; the message carries Pinterest's text), `validation_error` (`--product-group-id` is not a product group of the account). `--json` returns `products[]` (`pin_id`, `title`, `description`, `link`, `image_url`, `price`, `currency`, `availability`, `item_id`; the last four are catalog only), `bookmark`, `source`, `catalog_access`, and for the catalog source `product_groups[]` and `product_group_id` |
+| `pinterest:validate <pin-id-or-link>` | Check one Pin before you tag it. Takes a Pin ID or a Pin link (`https://www.pinterest.com/pin/<id>/`; `pin.it` short links do not work). Prints `Valid product Pin: <pin_id>` for a product Pin of the connected account, `Not valid (<pin_id>): <reason>` for a Pin that is not a product Pin, belongs to another account or does not exist, and `Not checked (<pin_id>): <reason>` when the check could not run (no Pinterest account, Pinterest did not answer, or Pinterest did not say if the Pin is a product Pin); the publish step is then the final check. The check does not look at the claimed-website rule; Pinterest applies that one at publish. `--json` returns `valid`, `pin_id`, `title`, `link`, `image_url`, `unverified`, `reason` |
+
 ### Audio (Instagram Reel music)
 
 | Command | Description |
@@ -273,6 +283,15 @@ All commands support these flags:
 | `--pinterest-link` | Link URL attached to the pin |
 | `--pinterest-video-cover` | Cover image URL for a video pin |
 | `--pinterest-alt-text` | Alt text for the pin |
+| `--pinterest-product-tags` | Products to tag on the Pin: a comma-separated list of Pin IDs (from `pinterest:products`) or Pin links (`https://www.pinterest.com/pin/<id>/`), max 24. Sent as `pinterest.product_tags` |
+
+Product tags (`--pinterest-product-tags`):
+- **Max 24 products per Pin.** More than 24, or an entry that is not a Pin ID or Pin link, answers `400 validation_error`.
+- **Own products only.** Pinterest accepts a product only when its Pin is public, belongs to the same Pinterest account and links to a website that account claimed. Products of other merchants cannot be tagged.
+- **A refused product never fails the post.** The tags are added right after the Pin is published. When Pinterest refuses one product, the Pin stays live and the other products are still tagged.
+- **Read the outcome after publishing.** A published post that had tags carries `pinterest.product_tags_result`: `requested` (number sent), `tagged` (Pin IDs on the Pin), `skipped` (`pin_id` + `reason` for each product that was not tagged) and `error` (set when the tag request itself failed, for example Pinterest was down; `tagged` is then empty). `posts:list` prints it as `Pinterest products: 1 of 2 tagged (skipped: <pin_id> PIN_IS_PRIVATE)` and `posts:get` shows the full object. Reason codes: `PIN_MISSING` (Pin not found), `PIN_IS_PRIVATE`, `PRODUCT_METADATA_MISSING` (not a product Pin), `PIN_NOT_FROM_VERIFIED_DOMAIN` (the product link is not on a claimed website), `PIN_NOT_FROM_SAME_USER_AS_HERO_PIN` (Pin of another account). Tell the user which products were skipped and why.
+- **On `posts:update` the Pinterest flags replace the stored Pinterest options as one object.** Pass every Pinterest flag the post needs again, `--pinterest-board-id` included. Leaving `--pinterest-product-tags` out of that update removes the tags.
+- `posts:get` returns the stored tags as Pin ID strings in `pinterest.product_tags` (a Pin link is stored as its Pin ID).
 
 #### YouTube (Shorts)
 | Flag | Description |
@@ -469,6 +488,16 @@ link: https://example.com/shop"
 ./scripts/omnisocials.js posts:create --text "Beautiful design inspiration" --channels <pinterest_id> --media-urls "https://example.com/pin.jpg" --pinterest-board-id <board_id> --pinterest-title "Design Inspiration" --pinterest-link "https://example.com"
 ```
 
+### Tag products on a Pinterest pin
+```
+./scripts/omnisocials.js pinterest:products
+# Returns: pin_id: 813744226420795884  Blue ribbed top  (24.99 EUR, IN_STOCK, item TOP-BLUE-M)
+# Optional: check one Pin ID or Pin link first with pinterest:validate 813744226420795884
+
+./scripts/omnisocials.js posts:create --text "Autumn outfit" --channels <pinterest_id> --media-urls "https://example.com/outfit.jpg" --pinterest-board-id <board_id> --pinterest-product-tags 813744226420795884,813744226420795885
+```
+Max 24 products per Pin, and only product Pins of the connected Pinterest account. A product that Pinterest refuses does not fail the post: after publishing, `posts:list` prints `Pinterest products: 1 of 2 tagged (skipped: <pin_id> <reason>)`.
+
 ### Upload media and create a post with it
 ```
 ./scripts/omnisocials.js media:upload --url "https://example.com/photo.jpg"
@@ -645,6 +674,8 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 | `validation_error` | Missing required fields or invalid data | Check required media/fields for the platform |
 | `not_found` | Resource doesn't exist | Verify the ID is correct |
 | `max_retries_reached` | A platform on this post already failed 3 retries | Recreate the post with `posts:create` |
+| `pinterest_not_connected` | `pinterest:products` on a workspace without a Pinterest account | Ask the user to connect Pinterest in the dashboard |
+| `pinterest_catalog_access_required` | `pinterest:products --source catalog` on a connection without catalog access | Ask the user to connect the catalog (composer, Pinterest options, Add products, Connect catalog), or run `pinterest:products --source pins` |
 
 ### Rate Limits
 
@@ -659,6 +690,7 @@ The API allows 100 requests per minute per API key. Response headers include:
 - **Use `--json`** when you need to parse the output programmatically
 - **Check content types**: Use `accounts:list` to see what content types each account supports (post, story, reel)
 - **Pinterest boards**: Run `accounts:get <pinterest_id>` to see available boards and their IDs
+- **Pinterest product tags**: Run `pinterest:products` to get product Pin IDs for `--pinterest-product-tags` (max 24, own product Pins only)
 - **Scheduling**: Use ISO 8601 format for dates (e.g., `2026-04-10T14:00:00Z`)
 - **Media upload**: Supports JPEG, PNG, GIF, WebP images and MP4, MOV, AVI videos (max 50MB)
 - **Draft first**: When unsure, create as draft (no `--schedule`), review, then publish with `posts:publish`
