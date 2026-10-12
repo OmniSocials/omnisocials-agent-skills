@@ -43,7 +43,7 @@ Ask your AI agent things like:
 
 ## Commands
 
-50 commands covering the full v1 API:
+56 commands covering the full v1 API:
 
 | Category | Commands |
 |----------|----------|
@@ -53,6 +53,7 @@ Ask your AI agent things like:
 | **Media** | `media:list`, `media:upload`, `media:upload-base64`, `media:check`, `media:delete` |
 | **Folders** | `folders:list`, `folders:create` |
 | **Hashtag sets** | `hashtag-sets:list`, `hashtag-sets:create`, `hashtag-sets:update`, `hashtag-sets:delete` |
+| **Automations (comment to DM)** | `automations:list`, `automations:get`, `automations:create`, `automations:update`, `automations:delete`, `automations:events` |
 | **Accounts** | `accounts:list`, `accounts:get` |
 | **Locations & audio** | `locations:search`, `audio:search` |
 | **Pinterest products** | `pinterest:products`, `pinterest:validate` |
@@ -66,9 +67,11 @@ Ask your AI agent things like:
 - **Posts, Stories, and Reels** with platform-specific options
 - **Platform-specific controls**: Pinterest boards and product tags, YouTube metadata, TikTok privacy, Instagram covers, X reply settings
 - **Per-platform media**: Different images/videos for different platforms in the same post
+- **Image fit per channel** (unreleased): a feed image outside what a channel shows uncropped is cropped or kept per channel (`--media-fit instagram=keep,pinterest=crop`); `media:check` shows how each channel would show it first
 - **Alt text**: Per-media accessibility descriptions, delivered to Mastodon, Bluesky, X, Pinterest, Instagram (images) and LinkedIn (images)
 - **Analytics**: Post-level, bulk, workspace overview, account-level metrics, and best posting times
 - **Social inbox**: Read and reply to DMs, comments, and mentions
+- **Comment to DM** (unreleased): answer a keyword in an Instagram comment with a DM, once per person, with a public reply under the comment; on a new post (`--dm-keywords`, `--dm-message`) or an existing one (`automations:create`), with the activity per person (`automations:events`)
 - **Approvals**: Send a post through an approval workflow, approve or reject it, and read the review (who decided, the reason, the comments)
 - **Webhooks**: Get notified when posts are scheduled, published, fail, or are approved or rejected in an approval workflow
 - **Zero dependencies**: Uses Node.js 18+ built-in fetch

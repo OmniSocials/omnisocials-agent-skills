@@ -174,6 +174,56 @@ describe("CLI basics", () => {
     );
   });
 
+  it("posts:create --draft with --schedule sends draft: true", async () => {
+    await withMockServer(
+      () => ({
+        status: 201,
+        json: { data: { id: "p1", status: "draft", schedule_at: "2026-08-01T09:00:00Z" } },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Proposed for Friday",
+          "--schedule",
+          "2026-08-01T09:00:00Z",
+          "--draft",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.schedule_at).toBe("2026-08-01T09:00:00Z");
+        expect(calls[0].body.draft).toBe(true);
+        expect(stdout).toContain("Planned for: 2026-08-01T09:00:00Z");
+      }
+    );
+  });
+
+  it("posts:update --no-draft sends draft: false", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "scheduled", schedule_at: "2026-08-01T09:00:00Z" } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:update",
+          "p1",
+          "--no-draft",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/posts/p1");
+        expect(calls[0].body).toEqual({ draft: false });
+        expect(stdout).toContain("Scheduled: 2026-08-01T09:00:00Z");
+      }
+    );
+  });
+
   it("posts:create rejects a --video-cover-json that is not JSON", async () => {
     const { stderr, exitCode } = await run([
       "posts:create",
@@ -1615,6 +1665,1024 @@ describe("Pinterest product tagging (mock API)", () => {
         expect(unverified.stdout).toContain(
           `Not checked (${PRODUCT_B}): Pinterest did not answer. The publish step is the final check.`
         );
+      }
+    );
+  });
+});
+
+// Fixtures in the public API's response shape for the image fit feature:
+// a `warnings[]` entry of POST /posts/create and a `fit[]` row of POST /media/check.
+const FIT_CROPPED = {
+  code: "image_fit",
+  platform: "instagram",
+  media_url: "https://cdn.example.com/pier-9x16.jpg",
+  ratio: "9:16",
+  target: "4:5",
+  action: "cropped",
+  crop_url: "https://cdn.example.com/pier-9x16-4x5.jpg",
+  message:
+    'Instagram: This image is 9:16. Instagram shows feed images between 4:5 and 1.91:1, and Meta cannot boost a feed post outside that range. It was cropped to 4:5 around the subject. To send the original, update the post with media_fit: { "instagram": "keep" }.',
+};
+const FIT_KEPT = {
+  code: "image_fit",
+  platform: "pinterest",
+  media_url: "https://cdn.example.com/pier-9x16.jpg",
+  ratio: "9:16",
+  target: "2:3",
+  action: "kept",
+  message:
+    'Pinterest: This image is 9:16. Pinterest may cut a Pin taller than 2:3 in the home feed. The Pin page shows it whole. Pinterest cuts it to fit. Pass media_fit: { "pinterest": "crop" } to crop it to 2:3.',
+};
+const MEDIA_CHECK_FIT = {
+  file: { size_bytes: 812345, mime: "image/jpeg", size_known: true, width: 1080, height: 1920 },
+  connected_platforms: ["instagram", "pinterest", "linkedin"],
+  compatible: true,
+  warnings: [],
+  summary: null,
+  fit: [
+    {
+      platform: "instagram",
+      display_name: "Instagram",
+      fits: false,
+      ratio: "9:16",
+      shown: "cut",
+      target: "4:5",
+      default_action: "crop",
+      message:
+        'Instagram: This image is 9:16. Instagram shows feed images between 4:5 and 1.91:1, and Meta cannot boost a feed post outside that range. A post crops it to 4:5 unless media_fit says "keep".',
+    },
+    {
+      platform: "pinterest",
+      display_name: "Pinterest",
+      fits: false,
+      ratio: "9:16",
+      shown: "cut",
+      target: "2:3",
+      default_action: "keep",
+      message:
+        "Pinterest: This image is 9:16. Pinterest may cut a Pin taller than 2:3 in the home feed. The Pin page shows it whole. Pinterest cuts it to fit.",
+    },
+  ],
+};
+
+describe("Image fit per channel (mock API)", () => {
+  it("help lists --media-fit", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("--media-fit <ch=action,..>");
+    expect(stdout).toContain("--media-urls --media-ids --media-fit]");
+  });
+
+  it("posts:create sends --media-fit as a media_fit object and prints the image_fit warnings", async () => {
+    await withMockServer(
+      () => ({
+        status: 201,
+        json: { data: { id: "p1", status: "scheduled" }, warnings: [FIT_CROPPED, FIT_KEPT] },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Golden hour on the pier",
+          "--channels",
+          "instagram,pinterest",
+          "--media-urls",
+          "https://example.com/pier-9x16.jpg",
+          "--media-fit",
+          "instagram=auto, pinterest=keep",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.media_fit).toEqual({ instagram: "auto", pinterest: "keep" });
+        expect(stdout).toContain("Post created successfully!");
+        expect(stdout).toContain("Warnings (2):");
+        expect(stdout).toContain("[image_fit] Instagram: This image is 9:16.");
+        expect(stdout).toContain('update the post with media_fit: { "instagram": "keep" }.');
+        expect(stdout).toContain("crop: https://cdn.example.com/pier-9x16-4x5.jpg");
+        expect(stdout).toContain("[image_fit] Pinterest: This image is 9:16.");
+        expect(stdout.indexOf("Post created successfully!")).toBeLessThan(stdout.indexOf("Warnings (2):"));
+      }
+    );
+  });
+
+  it("posts:create without --media-fit sends no media_fit and prints no warnings block when the API sends none", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Square photo",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).not.toHaveProperty("media_fit");
+        expect(stdout).not.toContain("Warnings");
+      }
+    );
+  });
+
+  it("posts:create --json returns the response with its warnings unchanged", async () => {
+    const response = { data: { id: "p1", status: "scheduled" }, warnings: [FIT_CROPPED] };
+    await withMockServer(
+      () => ({ status: 201, json: response }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Golden hour",
+          "--json",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(JSON.parse(stdout)).toEqual(response);
+      }
+    );
+  });
+
+  it("posts:create-and-publish prints the x_url_post_credits warning too", async () => {
+    const credits = {
+      code: "x_url_post_credits",
+      message:
+        "This post contains 1 X tweet(s) with a link and will use 20 credits when it publishes (X's link-post fee, passed through at cost).",
+      credits_required: 20,
+      credits_balance: 140,
+      enforced: true,
+      enforce_from: "2026-08-14",
+    };
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p2", status: "posting" }, warnings: [credits] } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create-and-publish",
+          "--text",
+          "Read it at https://example.com/report",
+          "--channels",
+          "x",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create-and-publish");
+        expect(stdout).toContain("Post created and publishing!");
+        expect(stdout).toContain("Warnings (1):");
+        expect(stdout).toContain("[x_url_post_credits] This post contains 1 X tweet(s) with a link");
+        expect(stdout).not.toContain("crop:");
+      }
+    );
+  });
+
+  it("posts:update --media-fit alone sends only media_fit and prints what changed", async () => {
+    const restored = { ...FIT_CROPPED, action: "kept", message: "Instagram: This image is 9:16. Instagram shows feed images between 4:5 and 1.91:1, and Meta cannot boost a feed post outside that range. Instagram cuts it to fit." };
+    delete restored.crop_url;
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "scheduled" }, warnings: [restored] } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:update",
+          "p1",
+          "--media-fit",
+          "instagram=keep",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/posts/p1");
+        expect(calls[0].body).toEqual({ media_fit: { instagram: "keep" } });
+        expect(stdout).toContain("Post updated successfully!");
+        expect(stdout).toContain("[image_fit] Instagram: This image is 9:16.");
+        expect(stdout).toContain("Instagram cuts it to fit.");
+        expect(stdout).not.toContain("crop:");
+      }
+    );
+  });
+
+  it("posts:create rejects a malformed --media-fit before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const base = ["posts:create", "--text", "Golden hour", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const badAction = await run([...base, "--media-fit", "instagram=stretch"]);
+        expect(badAction.exitCode).not.toBe(0);
+        expect(badAction.stderr).toContain('"stretch" is not an action for instagram');
+        expect(badAction.stderr).toContain("instagram=keep,pinterest=crop");
+
+        const badChannel = await run([...base, "--media-fit", "instgram=keep"]);
+        expect(badChannel.exitCode).not.toBe(0);
+        expect(badChannel.stderr).toContain('unknown channel "instgram"');
+
+        const noPair = await run([...base, "--media-fit", "instagram"]);
+        expect(noPair.exitCode).not.toBe(0);
+        expect(noPair.stderr).toContain("--media-fit takes <channel>=<auto|crop|keep> pairs");
+
+        const noValue = await run([...base, "--media-fit"]);
+        expect(noValue.exitCode).not.toBe(0);
+        expect(noValue.stderr).toContain("--media-fit takes <channel>=<auto|crop|keep> pairs");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("media:check prints the fit rows in plain words after the JSON, with the --media-fit override", async () => {
+    await withMockServer(
+      () => ({ json: MEDIA_CHECK_FIT }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "media:check",
+          "--media-id",
+          "12345",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/media/check");
+        expect(calls[0].body).toEqual({ media_id: "12345" });
+        expect(stdout).toContain('"width": 1080');
+        expect(stdout).toContain("Image fit (feed posts):");
+        expect(stdout).toContain(
+          "Instagram: 9:16, outside the window Instagram shows uncropped; default: crop to 4:5 around the subject"
+        );
+        expect(stdout).toContain('A post crops it to 4:5 unless media_fit says "keep".');
+        expect(stdout).toContain(
+          "Pinterest: 9:16, outside the window Pinterest shows uncropped; default: keep the original (Pinterest may cut it; crop target 2:3)"
+        );
+        expect(stdout).toContain(
+          "Override on posts:create / posts:update with --media-fit instagram=keep,pinterest=crop"
+        );
+        expect(stdout.indexOf('"fit"')).toBeLessThan(stdout.indexOf("Image fit (feed posts):"));
+      }
+    );
+  });
+
+  it("media:check prints a fitting image as shown whole and no block when fit is empty", async () => {
+    const answers = [
+      {
+        ...MEDIA_CHECK_FIT,
+        file: { ...MEDIA_CHECK_FIT.file, width: 1080, height: 1350 },
+        fit: [
+          { platform: "instagram", display_name: "Instagram", fits: true, ratio: "4:5", shown: "whole", target: null, default_action: null, message: null },
+        ],
+      },
+      { ...MEDIA_CHECK_FIT, file: { ...MEDIA_CHECK_FIT.file, mime: "video/mp4", width: null, height: null }, fit: [] },
+    ];
+    await withMockServer(
+      () => ({ json: answers.shift() }),
+      async (baseUrl) => {
+        const args = ["media:check", "--media-id", "12345", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+        const whole = await run(args);
+        expect(whole.exitCode).toBe(0);
+        expect(whole.stdout).toContain("Instagram: 4:5, shown whole");
+        expect(whole.stdout).not.toContain("Override on posts:create");
+
+        const video = await run(args);
+        expect(video.exitCode).toBe(0);
+        expect(video.stdout).not.toContain("Image fit (feed posts):");
+      }
+    );
+  });
+
+  it("media:check --json returns the API response unchanged", async () => {
+    await withMockServer(
+      () => ({ json: MEDIA_CHECK_FIT }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "media:check",
+          "--media-id",
+          "12345",
+          "--json",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(JSON.parse(stdout)).toEqual(MEDIA_CHECK_FIT);
+      }
+    );
+  });
+});
+
+// The Automation object as GET /automations/{id} returns it (post: a snapshot
+// of the OmniSocials post it listens on).
+const AUTOMATION = {
+  id: "100000004",
+  type: "comment_to_dm",
+  platform: "instagram",
+  status: "active",
+  name: "guide",
+  post_id: "83778183",
+  instagram_media_id: "18134683699582250",
+  post: {
+    source: "omnisocials",
+    id: "83778183",
+    caption: "Comment GUIDE for the free checklist",
+    thumbnail_url: "https://cdn.example.com/thumb.jpg",
+    permalink: "https://www.instagram.com/p/DABC123/",
+    media_type: "POST",
+    status: "posted",
+    post_date_time: "2026-10-09T09:00:00.000Z",
+    live: true,
+  },
+  trigger: { kinds: ["comment"], scope: "post", keywords: ["guide", "link"], match: "word" },
+  actions: {
+    dm: { text: "Here is the guide: https://example.com/guide" },
+    public_reply: { enabled: true, variations: ["Sent you a DM!", "Check your inbox"] },
+  },
+  limits: { max_sends: 100, stop_at: null },
+  stats: { matched: 15, sent: 12, skipped: 3, failed: 0, last_event_at: "2026-10-10T21:40:00.000Z" },
+  created_at: "2026-10-10T21:33:34.341Z",
+  updated_at: "2026-10-10T21:33:34.341Z",
+};
+
+const SCOPE_ERROR = {
+  status: 403,
+  json: { error: { code: "insufficient_scope", message: "This API key lacks the automations:read scope" } },
+};
+
+describe("Comment-to-DM automations (mock API)", () => {
+  it("help lists the automation commands and the --dm-* post flags", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("AUTOMATIONS");
+    expect(stdout).toContain("automations:list");
+    expect(stdout).toContain("automations:create");
+    expect(stdout).toContain("automations:events <id>");
+    expect(stdout).toContain("--dm-keywords <a,b>");
+    expect(stdout).toContain("--dm-message");
+    expect(stdout).toContain("--no-dm");
+  });
+
+  it("automations:create builds the nested body with the defaults spelled out", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:create",
+          "--post-id",
+          "83778183",
+          "--keywords",
+          "guide, link",
+          "--dm",
+          "Here is the guide: https://example.com/guide",
+          "--reply",
+          "Sent you a DM!",
+          "--reply",
+          "Check your inbox",
+          "--max-sends",
+          "100",
+          "--name",
+          "guide",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/automations");
+        expect(calls[0].body).toEqual({
+          name: "guide",
+          post_id: "83778183",
+          trigger: { kinds: ["comment"], scope: "post", keywords: ["guide", "link"], match: "word" },
+          actions: {
+            dm: { text: "Here is the guide: https://example.com/guide" },
+            public_reply: { enabled: true, variations: ["Sent you a DM!", "Check your inbox"] },
+          },
+          limits: { max_sends: 100 },
+        });
+        expect(stdout).toContain("Automation created!");
+        expect(stdout).toContain("ID: 100000004");
+        expect(stdout).toContain("Trigger: comment on this post; keywords: guide, link (whole word)");
+        expect(stdout).toContain('Post: post 83778183: "Comment GUIDE for the free checklist"  https://www.instagram.com/p/DABC123/  (live)');
+        expect(stdout).toContain("DM: Here is the guide: https://example.com/guide");
+        expect(stdout).toContain('Public reply: "Sent you a DM!" | "Check your inbox"');
+        expect(stdout).toContain("Limits: max 100 DMs");
+        expect(stdout).toContain("Stats: 12 sent / 15 matched / 3 skipped / 0 failed");
+        expect(stdout).toContain("Activity: automations:events 100000004");
+      }
+    );
+  });
+
+  it("automations:create takes a comma list for --reply, --triggers, --scope, --stop-at and --paused", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { ...AUTOMATION, status: "paused", post: null, post_id: null } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:create",
+          "--triggers",
+          "comment,dm",
+          "--scope",
+          "next_post",
+          "--keywords",
+          "guide",
+          "--match",
+          "contains",
+          "--dm",
+          "Here you go",
+          "--reply",
+          "Sent you a DM!,Check your inbox",
+          "--stop-at",
+          "2026-12-31T00:00:00Z",
+          "--paused",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({
+          trigger: { kinds: ["comment", "dm"], scope: "next_post", keywords: ["guide"], match: "contains" },
+          actions: {
+            dm: { text: "Here you go" },
+            public_reply: { enabled: true, variations: ["Sent you a DM!", "Check your inbox"] },
+          },
+          limits: { stop_at: "2026-12-31T00:00:00Z" },
+          status: "paused",
+        });
+        expect(stdout).toContain("Turn it on with: automations:update 100000004 --resume");
+      }
+    );
+  });
+
+  it("automations:create leaves scope out of a DM-only trigger and needs no post for it", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "automations:create",
+          "--triggers",
+          "dm,story_reply",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here you go",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.trigger).toEqual({ kinds: ["dm", "story_reply"], keywords: ["guide"], match: "word" });
+      }
+    );
+  });
+
+  it("automations:create refuses a missing --dm, both post flags, and a comment trigger on a post without the post, before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const base = ["automations:create", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const noDm = await run([...base, "--keywords", "guide", "--post-id", "1"]);
+        expect(noDm.exitCode).not.toBe(0);
+        expect(noDm.stderr).toContain("Usage: omnisocials automations:create");
+
+        const bothPosts = await run([...base, "--dm", "x", "--keywords", "guide", "--post-id", "1", "--instagram-media-id", "2"]);
+        expect(bothPosts.exitCode).not.toBe(0);
+        expect(bothPosts.stderr).toContain("not both");
+
+        const noPost = await run([...base, "--dm", "x", "--keywords", "guide"]);
+        expect(noPost.exitCode).not.toBe(0);
+        expect(noPost.stderr).toContain("needs the post");
+        expect(noPost.stderr).toContain("--scope next_post");
+
+        const badMatch = await run([...base, "--dm", "x", "--keywords", "guide", "--post-id", "1", "--match", "fuzzy"]);
+        expect(badMatch.exitCode).not.toBe(0);
+        expect(badMatch.stderr).toContain("--match must be one of word|contains|any");
+
+        const badTrigger = await run([...base, "--dm", "x", "--keywords", "guide", "--post-id", "1", "--triggers", "comment,mention"]);
+        expect(badTrigger.exitCode).not.toBe(0);
+        expect(badTrigger.stderr).toContain('--triggers: "mention" is not one of comment|dm|story_reply');
+
+        const badSends = await run([...base, "--dm", "x", "--keywords", "guide", "--post-id", "1", "--max-sends", "lots"]);
+        expect(badSends.exitCode).not.toBe(0);
+        expect(badSends.stderr).toContain("--max-sends must be a whole number above 0");
+
+        const badStop = await run([...base, "--dm", "x", "--keywords", "guide", "--post-id", "1", "--stop-at", "tomorrow"]);
+        expect(badStop.exitCode).not.toBe(0);
+        expect(badStop.stderr).toContain("--stop-at must be an ISO 8601 time");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("automations:create --scope any sends no post and passes", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { ...AUTOMATION, post: null, post_id: null, instagram_media_id: null } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "automations:create",
+          "--scope",
+          "any",
+          "--match",
+          "any",
+          "--dm",
+          "Thanks for the comment",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({
+          trigger: { kinds: ["comment"], scope: "any", match: "any" },
+          actions: { dm: { text: "Thanks for the comment" } },
+        });
+      }
+    );
+  });
+
+  it("automations:update sends only the sections given, and --pause / --resume the status", async () => {
+    await withMockServer(
+      () => ({ json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const keywords = await run([
+          "automations:update",
+          "100000004",
+          "--keywords",
+          "guide,link,checklist",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(keywords.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/automations/100000004");
+        expect(calls[0].body).toEqual({ trigger: { keywords: ["guide", "link", "checklist"] } });
+        expect(keywords.stdout).toContain("Automation updated!");
+
+        const pause = await run(["automations:update", "100000004", "--pause", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(pause.exitCode).toBe(0);
+        expect(calls[1].body).toEqual({ status: "paused" });
+
+        const resume = await run([
+          "automations:update",
+          "100000004",
+          "--resume",
+          "--max-sends",
+          "500",
+          "--dm",
+          "New text",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(resume.exitCode).toBe(0);
+        expect(calls[2].body).toEqual({
+          status: "active",
+          actions: { dm: { text: "New text" } },
+          limits: { max_sends: 500 },
+        });
+
+        const move = await run([
+          "automations:update",
+          "100000004",
+          "--instagram-media-id",
+          "17931294888148229",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(move.exitCode).toBe(0);
+        expect(calls[3].body).toEqual({ instagram_media_id: "17931294888148229" });
+      }
+    );
+  });
+
+  it("automations:update refuses no fields, --pause with --resume, and a missing id, before calling the API", async () => {
+    await withMockServer(
+      () => ({ json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const noId = await run(["automations:update", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(noId.exitCode).not.toBe(0);
+        expect(noId.stderr).toContain("Usage:");
+
+        const nothing = await run(["automations:update", "100000004", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(nothing.exitCode).not.toBe(0);
+        expect(nothing.stderr).toContain("Nothing to update");
+
+        const both = await run(["automations:update", "100000004", "--pause", "--resume", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(both.exitCode).not.toBe(0);
+        expect(both.stderr).toContain("Pass --pause or --resume, not both");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("automations:list passes --status and --post-id through and prints one block per automation", async () => {
+    const second = {
+      ...AUTOMATION,
+      id: "100000005",
+      status: "paused",
+      name: null,
+      post: null,
+      post_id: null,
+      instagram_media_id: null,
+      trigger: { kinds: ["dm", "story_reply"], scope: null, keywords: ["price"], match: "contains" },
+      stats: { matched: 0, sent: 0, skipped: 0, failed: 0, last_event_at: null },
+    };
+    await withMockServer(
+      () => ({ json: { data: [AUTOMATION, second] } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:list",
+          "--status",
+          "active",
+          "--post-id",
+          "83778183",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/automations");
+        expect(calls[0].query.get("status")).toBe("active");
+        expect(calls[0].query.get("post_id")).toBe("83778183");
+        expect(stdout).toContain("Automations (2)");
+        expect(stdout).toContain("ID: 100000004  active  guide");
+        expect(stdout).toContain("  Trigger: comment on this post; keywords: guide, link (whole word)");
+        expect(stdout).toContain('  Post: post 83778183: "Comment GUIDE for the free checklist"  https://www.instagram.com/p/DABC123/  (live)');
+        expect(stdout).toContain("  Stats: 12 sent / 15 matched / 3 skipped / 0 failed");
+        expect(stdout).toContain("ID: 100000005  paused\n");
+        expect(stdout).toContain("  Trigger: DM, story reply; keywords: price (anywhere in the text)");
+        expect(stdout).toContain("  Stats: 0 sent / 0 matched / 0 skipped / 0 failed");
+      }
+    );
+  });
+
+  it("automations:list prints the empty line, rejects an unknown --status, and sends no query without flags", async () => {
+    await withMockServer(
+      () => ({ json: { data: [] } }),
+      async (baseUrl, calls) => {
+        const empty = await run(["automations:list", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(empty.exitCode).toBe(0);
+        expect(empty.stdout).toContain("No automations found. Create one with automations:create.");
+        expect([...calls[0].query.keys()]).toEqual([]);
+
+        const bad = await run(["automations:list", "--status", "done", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("--status must be one of active|paused|completed");
+        expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it("automations:get prints the detail, and --json the API response unchanged", async () => {
+    await withMockServer(
+      () => ({ json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const human = await run(["automations:get", "100000004", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(human.exitCode).toBe(0);
+        expect(calls[0].path).toBe("/automations/100000004");
+        expect(human.stdout).toContain("ID: 100000004\nStatus: active\nName: guide\n");
+        expect(human.stdout).toContain("Stats: 12 sent / 15 matched / 3 skipped / 0 failed  (last event 2026-10-10T21:40:00.000Z)");
+        expect(human.stdout).toContain("Created: 2026-10-10T21:33:34.341Z");
+
+        const raw = await run(["automations:get", "100000004", "--json", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(raw.exitCode).toBe(0);
+        expect(JSON.parse(raw.stdout)).toEqual({ data: AUTOMATION });
+      }
+    );
+  });
+
+  it("automations:delete sends DELETE and says so", async () => {
+    await withMockServer(
+      () => ({ status: 204, json: null }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["automations:delete", "100000004", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("DELETE");
+        expect(calls[0].path).toBe("/automations/100000004");
+        expect(stdout).toContain("Automation deleted.");
+
+        const noId = await run(["automations:delete", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(noId.exitCode).not.toBe(0);
+        expect(noId.stderr).toContain("Usage: omnisocials automations:delete <id>");
+      }
+    );
+  });
+
+  it("automations:events prints the counts line, one line per event and the next offset", async () => {
+    const events = [
+      {
+        id: "1",
+        automation_id: "100000004",
+        kind: "comment",
+        outcome: "sent",
+        reason: null,
+        reason_label: null,
+        person: { id: "1784", username: "jane" },
+        trigger_id: "1789",
+        trigger_text: "guide please",
+        message: "Here is the guide: https://example.com/guide",
+        public_reply: "Sent you a DM!",
+        platform_message_id: "m_1",
+        created_at: "2026-10-10T21:40:00.000Z",
+        sent_at: "2026-10-10T21:40:01.000Z",
+      },
+      {
+        id: "2",
+        automation_id: "100000004",
+        kind: "story_reply",
+        outcome: "skipped",
+        reason: "already_sent",
+        reason_label: "Already sent to this person",
+        person: { id: "1785", username: null },
+        trigger_id: "m_2",
+        trigger_text: null,
+        message: null,
+        public_reply: null,
+        platform_message_id: null,
+        created_at: "2026-10-10T21:41:00.000Z",
+        sent_at: null,
+      },
+    ];
+    await withMockServer(
+      () => ({
+        json: {
+          data: events,
+          counts: { sent: 12, skipped: 3 },
+          pagination: { total: 15, limit: 2, offset: 0, has_more: true },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:events",
+          "100000004",
+          "--outcome",
+          "sent",
+          "--limit",
+          "2",
+          "--offset",
+          "0",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/automations/100000004/events");
+        expect(calls[0].query.get("outcome")).toBe("sent");
+        expect(calls[0].query.get("limit")).toBe("2");
+        expect(calls[0].query.get("offset")).toBe("0");
+        expect(stdout).toContain("Counts: 12 sent, 3 skipped");
+        expect(stdout).toContain("Events (15, sent)");
+        expect(stdout).toContain(
+          '2026-10-10T21:40:00.000Z  comment  sent  @jane  "guide please"  DM: "Here is the guide: https://example.com/guide"'
+        );
+        expect(stdout).toContain("2026-10-10T21:41:00.000Z  story reply  skipped (Already sent to this person)  person 1785");
+        expect(stdout).toContain("More: pass --offset 2 for the next page.");
+      }
+    );
+  });
+
+  it("automations:events says so when there is nothing yet and rejects an unknown --outcome", async () => {
+    await withMockServer(
+      () => ({ json: { data: [], counts: {}, pagination: { total: 0, limit: 25, offset: 0, has_more: false } } }),
+      async (baseUrl, calls) => {
+        const empty = await run(["automations:events", "100000004", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(empty.exitCode).toBe(0);
+        expect(empty.stdout).toContain("Counts: none yet");
+        expect(empty.stdout).toContain("No events yet.");
+
+        const bad = await run(["automations:events", "100000004", "--outcome", "bounced", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("--outcome must be one of sent|skipped|failed|pending");
+        expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it("a 403 insufficient_scope prints the error and where to turn the scopes on", async () => {
+    await withMockServer(
+      () => SCOPE_ERROR,
+      async (baseUrl) => {
+        const { stderr, stdout, exitCode } = await run(["automations:list", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [insufficient_scope]: This API key lacks the automations:read scope");
+        expect(stderr).toContain("Enable Automations on the API key (Settings > API: adds automations:read and automations:write).");
+        expect(stdout).toBe("");
+
+        const raw = await run(["automations:list", "--json", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(raw.exitCode).not.toBe(0);
+        expect(JSON.parse(raw.stdout)).toEqual(SCOPE_ERROR.json);
+        expect(raw.stderr).toContain("Enable Automations on the API key");
+      }
+    );
+  });
+
+  it("a 409 automation_exists names the automation the post already has; other errors print code and message", async () => {
+    let reply = {
+      status: 409,
+      json: { error: { code: "automation_exists", message: "This post already has an automation", automation_id: "100000004" } },
+    };
+    await withMockServer(
+      () => reply,
+      async (baseUrl) => {
+        const exists = await run([
+          "automations:create",
+          "--post-id",
+          "83778183",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here you go",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exists.exitCode).not.toBe(0);
+        expect(exists.stderr).toContain("Error [automation_exists]: This post already has an automation");
+        expect(exists.stderr).toContain("automations:update 100000004");
+
+        reply = { status: 409, json: { error: { code: "instagram_not_connected", message: "Connect Instagram first" } } };
+        const other = await run(["automations:get", "100000004", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(other.exitCode).not.toBe(0);
+        expect(other.stderr).toContain("Error [instagram_not_connected]: Connect Instagram first");
+        expect(other.stderr).not.toContain("Enable Automations");
+      }
+    );
+  });
+
+  it("posts:create builds comment_dm_automation from the --dm-* flags and prints the Comment-to-DM line", async () => {
+    const bound = { ...AUTOMATION, id: "100000006", post: null };
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "scheduled", comment_dm_automation: bound } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Comment GUIDE for the free checklist",
+          "--channels",
+          "instagram",
+          "--media-urls",
+          "https://example.com/photo.jpg",
+          "--dm-keywords",
+          "guide, link",
+          "--dm-message",
+          "Here is the guide: https://example.com/guide",
+          "--dm-reply",
+          "Sent you a DM!,Check your inbox",
+          "--dm-match",
+          "contains",
+          "--dm-max-sends",
+          "500",
+          "--dm-stop-at",
+          "2026-12-31T00:00:00Z",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.comment_dm_automation).toEqual({
+          trigger: { keywords: ["guide", "link"], match: "contains" },
+          actions: {
+            dm: { text: "Here is the guide: https://example.com/guide" },
+            public_reply: { enabled: true, variations: ["Sent you a DM!", "Check your inbox"] },
+          },
+          limits: { max_sends: 500, stop_at: "2026-12-31T00:00:00Z" },
+        });
+        expect(stdout).toContain("Post created successfully!");
+        expect(stdout).toContain("Comment-to-DM: on (keywords: guide, link; id 100000006)");
+      }
+    );
+  });
+
+  it("posts:create-and-publish sends the --dm-* flags too, and a post without them carries no comment_dm_automation", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "posting" } } }),
+      async (baseUrl, calls) => {
+        const withDm = await run([
+          "posts:create-and-publish",
+          "--text",
+          "Comment GUIDE",
+          "--channels",
+          "instagram",
+          "--dm-keywords",
+          "guide",
+          "--dm-message",
+          "Here you go",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(withDm.exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create-and-publish");
+        expect(calls[0].body.comment_dm_automation).toEqual({
+          trigger: { keywords: ["guide"], match: "word" },
+          actions: { dm: { text: "Here you go" } },
+        });
+        expect(withDm.stdout).not.toContain("Comment-to-DM");
+
+        const without = await run(["posts:create", "--text", "Plain post", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(without.exitCode).toBe(0);
+        expect(calls[1].body).not.toHaveProperty("comment_dm_automation");
+      }
+    );
+  });
+
+  it("posts:update --no-dm sends comment_dm_automation: null and prints it as off", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "scheduled", comment_dm_automation: null } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["posts:update", "p1", "--no-dm", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/posts/p1");
+        expect(calls[0].body).toEqual({ comment_dm_automation: null });
+        expect(stdout).toContain("Comment-to-DM: off");
+      }
+    );
+  });
+
+  it("posts:create refuses --dm-keywords without --dm-message and the reverse, and --no-dm next to a --dm-* flag, before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const base = ["posts:create", "--text", "Comment GUIDE", "--channels", "instagram", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const noMessage = await run([...base, "--dm-keywords", "guide"]);
+        expect(noMessage.exitCode).not.toBe(0);
+        expect(noMessage.stderr).toContain('pass --dm-message "<text>" next to --dm-keywords');
+
+        const noKeywords = await run([...base, "--dm-message", "Here you go"]);
+        expect(noKeywords.exitCode).not.toBe(0);
+        expect(noKeywords.stderr).toContain('pass --dm-keywords "guide,link" next to --dm-message');
+
+        const mixed = await run(["posts:update", "p1", "--no-dm", "--dm-keywords", "guide", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(mixed.exitCode).not.toBe(0);
+        expect(mixed.stderr).toContain("--no-dm removes the post's comment-to-DM automation and cannot go with --dm-keywords");
+
+        const badMatch = await run([...base, "--dm-keywords", "guide", "--dm-message", "x", "--dm-match", "exact"]);
+        expect(badMatch.exitCode).not.toBe(0);
+        expect(badMatch.stderr).toContain("--dm-match must be one of word|contains|any");
+
+        expect(calls).toHaveLength(0);
+
+        // --dm-match any answers every comment, so no keywords are needed.
+        const any = await run([...base, "--dm-message", "Thanks!", "--dm-match", "any"]);
+        expect(any.exitCode).toBe(0);
+        expect(calls[0].body.comment_dm_automation).toEqual({
+          trigger: { match: "any" },
+          actions: { dm: { text: "Thanks!" } },
+        });
+      }
+    );
+  });
+
+  it("posts:create with a comment-to-DM automation gets the scope hint on a 403", async () => {
+    await withMockServer(
+      () => SCOPE_ERROR,
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Comment GUIDE",
+          "--channels",
+          "instagram",
+          "--dm-keywords",
+          "guide",
+          "--dm-message",
+          "Here you go",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [insufficient_scope]");
+        expect(stderr).toContain("Enable Automations on the API key");
       }
     );
   });

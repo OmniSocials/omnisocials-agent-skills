@@ -1,6 +1,6 @@
 ---
 name: omnisocials
-description: Manage social media across 11 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), and configure webhooks via the OmniSocials API.
+description: Manage social media across 11 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram, and configure webhooks via the OmniSocials API.
 ---
 
 # OmniSocials Skill
@@ -51,11 +51,13 @@ IMPORTANT: Follow these rules at all times.
    - Pinterest posts: ALWAYS require an image AND a `--pinterest-board-id`
    - Other platforms (LinkedIn Profile, LinkedIn Page, X, Facebook posts, Bluesky, Threads, Mastodon, Google Business): Media is optional
    - **Per-platform media caps** (exceeding returns a 400 validation_error stating the exact limit): max items — X/Bluesky/Mastodon ≤4, Instagram/Threads ≤10, TikTok ≤35 photos; the same caps apply per part of a thread (4 per part on X/Bluesky/Mastodon, 10 per part on Threads). Mixing images + video in one post: allowed on Instagram/Threads (mixed carousels), rejected on Facebook/LinkedIn/LinkedIn Page/X/Bluesky/Mastodon/TikTok (images only, or a single video). Video duration/size — **X 140s (2min 20s) / 512MB on free/Basic accounts; 125min / 16GB when the connected X account has Premium or Premium+** (tier auto-detected from the connection; reconnect X after upgrading), Bluesky 180s, Threads 5min, Instagram 15min, TikTok 10min, YouTube Short 3min. If the user's video is over the cap, tell them the limit so they can trim it.
+   - **Aspect ratio of feed images (Instagram, Pinterest)**: Instagram shows feed images between 4:5 and 1.91:1 and cuts a taller one (a 9:16 phone photo) to 4:5 itself with a blind centre crop; Meta cannot boost a feed post outside that range. By default OmniSocials crops such an image to 4:5 (tall) or 1.91:1 (wide) around the subject for the Instagram channel only and reports it; Pinterest keeps a Pin taller than 2:3 and reports that it may be cut in the home feed. Stories, reels, TikTok photos and videos are never cropped. Before posting a tall (9:16) image to Instagram, run `media:check --media-id <id>` (library images only: it prints an `Image fit` block when a channel would cut the image). When Instagram does not fit, ASK the user: "Crop to 4:5 (recommended, Meta can boost the post) or keep the original (Instagram cuts it itself, no boost)?" and pass the answer as `--media-fit instagram=crop` or `--media-fit instagram=keep` (Pinterest: `pinterest=crop` crops to 2:3). If the user gave no preference, let the default run and relay the `[image_fit]` warning the CLI prints after the post is created: what was cropped, to what, and that `posts:update <id> --media-fit instagram=keep` gives the original back. NEVER drop a channel from a post because of its image ratio; the post publishes either way.
    - **Pinterest board — auto-default to first**: If the user wants to post to Pinterest but hasn't specified a board, do NOT block on asking and do NOT skip Pinterest. Run `accounts:get <pinterest_account_id>` — its output lists each board's name and ID. Use the FIRST board automatically. After the post is created, mention to the user which board was used (e.g. "Posted to your 'Marketing' board on Pinterest — let me know if you'd prefer a different one and I'll move it."). If the user named a specific board in the request, match it case-insensitively against the list and use that one instead.
 5. **No duplicate content** across posts unless explicitly requested.
 6. **Always confirm timezone/datetime** with the user when scheduling posts.
 7. **For bulk operations**, process one at a time and confirm between actions.
 8. **Read the approval review before you report on or change a post in review.** When a post shows `approval_status: "rejected"` or `"pending"` (post `status` `rejected` or `in_approval`), run `posts:approval <id>` first. It says who decided, the reason and what the reviewers wrote. Do not guess why a post was rejected or who it waits for, and do not edit, reschedule or recreate the post before you have read the review and told the user what it says.
+9. **A comment-to-DM automation sends DMs in the account's name.** Before you create one (`automations:create`, or `--dm-keywords` / `--dm-message` on a post), show the user the exact DM text and the keyword and get their confirmation; the DM goes to every person who comments the keyword, once each, and a sent DM cannot be taken back. NEVER use `--match any` (or `--dm-match any`), which answers every comment, unless the user asked for every comment. The Automations scopes are opt-in on the API key: a `403 insufficient_scope` means the user has to enable Automations on the key (Settings > API), not that the request was wrong.
 
 ## Common Actions
 
@@ -63,6 +65,7 @@ IMPORTANT: Follow these rules at all times.
 |---|---|
 | "Post this to Instagram" | `accounts:list` to find Instagram channel ID, then `posts:create --text "..." --channels <id>` |
 | "Schedule a post for tomorrow" | `posts:create --text "..." --channels <ids> --schedule "2026-04-07T09:00:00Z"` |
+| "Propose a time but let me confirm it first" | `posts:create --text "..." --channels <ids> --schedule "2026-04-07T09:00:00Z" --draft`. A planned draft: it sits on the calendar at that time with a dashed outline and is not published until someone schedules it. When the user agrees: `posts:update <id> --no-draft` |
 | "Show my scheduled posts" | `posts:list --status scheduled` |
 | "Upload this image" | `media:upload --url "https://..."` (or `media:upload-base64 --file ./img.jpg` for a local file) |
 | "Create a reel for TikTok" | `posts:create --text "..." --channels <tiktok_id> --type reel --media-urls "https://video.mp4"` |
@@ -75,6 +78,7 @@ IMPORTANT: Follow these rules at all times.
 | "Tag a location on Threads" | `locations:search "<place name>" --platform threads`, then `posts:create ... --threads-location-id <id>` (rolling out) |
 | "Tag products on a Pinterest Pin" | `pinterest:products` to list the account's product Pins, then `posts:create ... --pinterest-board-id <id> --pinterest-product-tags <pin_id,pin_id>` (max 24, own product Pins only; a product Pinterest refuses never fails the post) |
 | "Post a reel with music" | `audio:search "<song or artist>"` (no query = trending), then `posts:create ... --type reel --instagram-audio-id <id>` |
+| "Post this tall (9:16) photo to Instagram" | `media:check --media-id <id>`; when the `Image fit` block says Instagram cuts it, ask "crop to 4:5 or keep the original?", then `posts:create ... --media-ids <id> --media-fit instagram=crop` or `instagram=keep`. Relay the `[image_fit]` warning the CLI prints |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
 | "Any new DMs / comments?" | `inbox:list --unread` (add `--platform` / `--type dm\|comment\|mention` to filter; `--unanswered` for only the ones still waiting for a reply). Needs the `inbox:read` scope |
 | "Work through what needs answering" / "Answer my inbox" | The `inbox:next` loop: `inbox:next` hands you the next unanswered item (DMs that can still be answered first, then Instagram/Facebook DMs whose 24-hour window has closed, then comments and mentions oldest first) with its thread, the post it is on and its `reply_window`; draft a reply from that and send it with `inbox:reply <conversation-id> --text "..." --next`, whose response already carries the next item. On a comment or mention always add `--message-id <message-id>` (the "Message to answer" id) so the reply lands under that person's comment. When `reply_window.open` is false the DM cannot be answered through the API: tell the user to answer it in the Instagram/Facebook app, or skip it with `inbox:read`. Skip one for good with `inbox:read <conversation-id>`, skip it for this call only with `--exclude <conversation-id>`. Stops when it prints "Nothing is waiting for an answer." Needs `inbox:read` (+ `inbox:write` to reply) |
@@ -85,6 +89,7 @@ IMPORTANT: Follow these rules at all times.
 | "Organize my media" | `folders:list` / `folders:create --name "..."`, then upload with `--folder-id <id>` |
 | "Add my usual hashtags" | `hashtag-sets:list` to find the set, then `posts:create ... --hashtag-set "<name>"` (add `--hashtag-placement first_comment` to keep tags out of the caption) |
 | "Save these hashtags for reuse" | `hashtag-sets:create --name "Brand" --tags "#a #b #c"` |
+| "Send a DM to everyone who comments a keyword on this post" | Confirm the DM text and the keyword with the user first (safety rule 9). On a new post: `posts:create ... --channels <instagram_id> --dm-keywords "guide" --dm-message "Here is the guide: https://..."` (add `--dm-reply "Sent you a DM!"` for a public reply under the comment). On a post that exists: `posts:list` to find its id, then `automations:create --post-id <id> --keywords "guide" --dm "..."`; a post published outside OmniSocials takes `--instagram-media-id <id>` instead. Read what happened with `automations:events <id>`. Needs the opt-in `automations:write` scope (`automations:read` to list and read) |
 | "Delete that post" | Confirm with user, then `posts:delete <id>` |
 | "Publish my draft" | Confirm with user, then `posts:publish <id>` |
 | "Retry my failed post" | `posts:list --status failed` to find it, then `posts:retry <id>` (retries only the failed platforms; check `posts:get` for the outcome). Note: `posts:publish` refuses failed posts; retry is the correct command |
@@ -117,6 +122,7 @@ Follow this workflow when creating posts:
 
 4. **Schedule or publish** as needed:
    - Add `--schedule "2026-04-10T14:00:00Z"` to schedule
+   - Add `--draft` next to `--schedule` to propose the time as a planned draft a person confirms (`posts:update <id> --no-draft` schedules it)
    - Use `posts:create-and-publish` to publish immediately
    - Or create as draft first, then `posts:publish <id>` after confirmation
 
@@ -137,9 +143,9 @@ Follow this workflow when creating posts:
 | `posts:list` | List posts. Flags: `--status draft\|in_approval\|scheduled\|posting\|published\|failed\|warning\|rejected` (`in_approval` = waiting for a reviewer in an approval workflow, `rejected` = an approver declined it; both print an `Approval:` line that names `posts:approval <id>`), `--limit`, `--offset` |
 | `posts:get <id>` | Get full post details |
 | `posts:recent-platform` | Fetch recent posts **live** from the connected platform APIs, including content published outside OmniSocials. Use when `posts:list` is empty (brand-new workspace). Returns each post's platform-native `id` (the stable de-dupe key for storing posts), a `permalink`, the full caption, format, timestamps, normalized engagement, and every raw metric the platform exposes as an exact integer (Instagram includes reach/views/saves/shares from per-post insights; TikTok includes average_time_watched/full_video_watched_rate/total_time_watched/favorites/reach when the workspace enabled TikTok comments). Records also carry `duration_seconds` (integer, nullable): video length in whole seconds where the platform's listing API reports it — currently TikTok and YouTube; `null` for images and platforms that don't expose it (Instagram's media API has no duration field). Add `--json` for the full, untruncated captions + exact metrics + ids + permalinks (the human table truncates/rounds). LinkedIn personal profiles can't be listed live (LinkedIn grants apps no such permission), so `linkedin` results are posts published through OmniSocials with their latest collected stats; TikTok photo posts are backfilled the same way. Flags: `--limit` (1-50, default 25; X defaults to 10 unless set explicitly — its API bills per returned post), `--platforms` (comma-separated filter). X results may come from a snapshot up to 24h old, refreshed right after publishing to X through OmniSocials. Requires the `analytics:read` scope. |
-| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`, `--threads-location-id`, `--video-cover-json`, plus platform flags |
+| `posts:create` | Create a new post. Flags: `--text`, `--channels`, `--schedule`, `--draft` (planned draft, with `--schedule`), `--type post\|story\|reel`, `--media-ids`, `--media-urls`, `--link-url` (+`--link-title`/`--link-description`/`--link-thumbnail-url`), `--location-id`, `--collaborators`, `--user-tags`, `--x-thread`, `--bluesky-thread`, `--mastodon-thread`, `--threads-thread`, `--threads-location-id`, `--video-cover-json`, `--dm-keywords` + `--dm-message` (comment-to-DM automation bound to this post, with `--dm-reply`, `--dm-match`, `--dm-max-sends`, `--dm-stop-at`; Instagram must be in `--channels`; see Automations), plus platform flags |
 | `posts:create-and-publish` | Create and publish immediately. Same flags as `posts:create` except `--schedule` |
-| `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create`. `--schedule` on a post pending approval (`in_approval`) moves only the time and does not change its status |
+| `posts:update <id>` | Update a draft or scheduled post. Same flags as `posts:create`. `--schedule` on a post pending approval (`in_approval`) moves only the time and does not change its status. `--no-draft` schedules a planned draft at the time it already carries (`400 validation_error` when it has none or it is in the past; pass a new `--schedule` then). `--draft` unschedules a scheduled post and keeps its time. The `--dm-*` flags replace the post's comment-to-DM automation, `--no-dm` removes it |
 | `posts:publish <id>` | Publish a draft/scheduled post now. Refuses posts whose status is `failed` or `warning`; use `posts:retry` for those |
 | `posts:retry <id>` | Retry the failed platforms of a failed or partially failed post; succeeded platforms are never re-published; async, max 3 retries per platform. The response means the retry is queued: poll `posts:get` for the outcome. After 3 retries on a platform the API returns `max_retries_reached` and the post must be recreated. Post responses carry `retry_of` (the failed post this one retries) and `retries` (retry posts created from this one); a `published` post with empty `published_urls` and `retries` set is a resolved failure whose live URLs are on the retry post |
 | `posts:approve <id>` | Approve the current step of a post's approval workflow (`approval_status: "pending"`, post `status: "in_approval"`). The connected user must be a listed approver for the CURRENT step — steps approve in order, so being an approver on a later step returns `forbidden` until earlier steps clear. If this is the last step, the post finalizes immediately (`scheduled` or `posting`); otherwise it stays `in_approval` and the next step's approvers are notified |
@@ -157,7 +163,7 @@ Follow this workflow when creating posts:
 | `media:upload-base64` | Upload a local file or base64 data (image, video, or PDF). Flags: `--file <path>` (auto-encodes + infers MIME, incl. `.pdf`) OR `--data` + `--mime-type`; plus `--filename`, `--name` (findable label), `--folder`, `--folder-id`, `--pdf-mode` |
 | `--pdf-mode` | PDF uploads only. `slides` (default): one image media item per page, one ID each; pass **all** of them to `posts:create --media-ids`. `document`: ONE media item for the whole PDF (`type: document`, pages in `pdf.pages`); pass its single ID in `--media-ids` and the post gets every page in order. Both keep the original file, which LinkedIn receives. Prefer `document` when the user wants one library item for the deck. `media:list --json` shows document items as `type: "document"` |
 | PDF carousels | Upload a **PDF** and it is split into one image slide per page (max 20). The response lists a media ID for every slide — pass **all** of them to `posts:create --media-ids` to post the deck as a carousel. The original file is kept (`pdf.id`, `pdf.name`, `pdf.url` in the response; each slide carries `pdf: { id, page, total_pages, ... }`). On LinkedIn the slides post as a native swipeable **document made from that original PDF** (text stays sharp, in-document links work, viewers download the real file, every page is included even past the 20-slide cap) as long as the slides are posted unchanged and in order; on Instagram, TikTok, Threads and Pinterest as an image carousel. Lets you post an existing deck (Canva/PowerPoint/Figma exported to PDF) without exporting each slide by hand. |
-| `media:check` | Check whether media fits target platforms before posting. Flags: `--url`, or `--media-id`, or `--size-bytes` + `--mime` |
+| `media:check` | Check whether media fits target platforms before posting. Flags: `--url`, or `--media-id`, or `--size-bytes` + `--mime`. For a library image (`--media-id`) the response also carries `file.width` / `file.height` and `fit[]`, printed as an `Image fit` block: how Instagram and Pinterest show it as a feed post (ratio, whether it fits, the crop target, the default action: `crop` on Instagram, `keep` on Pinterest) and the `--media-fit` value that overrides it. Videos and `--url` checks have no `fit` rows. Read it before posting a tall image to Instagram (Safety Rules, rule 4) |
 | `media:delete <id>` | Delete a media file |
 
 ### Folders
@@ -177,6 +183,19 @@ Saved, reusable groups of hashtags per workspace. Apply one at post-create time 
 | `hashtag-sets:create` | Save a set. Flags: `--name` (required, unique per workspace), `--tags` (required, e.g. `"#fitness #gym workout"` — `#` optional, deduped case-insensitively, max 100) |
 | `hashtag-sets:update <id>` | Rename and/or replace tags. `--tags` replaces the FULL list — pass the complete new list. |
 | `hashtag-sets:delete <id>` | Delete a set. Posts that already used it keep their hashtags. |
+
+### Automations (comment to DM)
+
+An automation answers a keyword in an Instagram comment with a DM, once per person, with an optional public reply under the comment ("Sent you a DM!"). It can also answer a keyword in a DM or in a reply to a story (`--triggers dm,story_reply`). It listens on one post (`--post-id`, an OmniSocials post that goes to Instagram, scheduled or live; or `--instagram-media-id` for a post published outside OmniSocials), on the next Instagram post the workspace publishes (`--scope next_post`) or on every post (`--scope any`). One automation per post. Instagram allows one private reply per comment within 7 days, and OmniSocials sends at most 180 DMs an hour per account. The scopes are opt-in on the API key: `automations:read` (list, get, events) and `automations:write` (create, update, delete, and the `--dm-*` flags on a post); without them the API answers `403 insufficient_scope` and the CLI says where to enable them (Settings > API). Follow safety rule 9: confirm the DM text and the keyword with the user before you create one.
+
+| Command | Description |
+|---|---|
+| `automations:list` | List automations: id, status (`active`, `paused`, `completed` = a limit was reached), name, trigger, the post with its caption or link, and the stats (sent / matched / skipped / failed). Flags: `--status active\|paused\|completed`, `--post-id <id>` |
+| `automations:get <id>` | Full detail: trigger, post, the DM text, the public reply variations, limits, stats, dates |
+| `automations:create` | Create one. Flags: `--dm "<text>"` (required, max 1000 chars), `--keywords "guide,link"` (up to 20; required unless `--match any`), `--post-id <id>` OR `--instagram-media-id <id>` (one of them is required for a comment trigger on a post), `--reply "<text>"` (public reply under the comment; repeat the flag, or pass a comma list, for up to 10 rotating variations; a reply with a comma goes in its own flag), `--match word\|contains\|any` (default `word` = the whole word; `any` answers every comment), `--scope post\|next_post\|any` (default `post`), `--triggers comment,dm,story_reply` (default `comment`; the public reply applies to comments only), `--max-sends <n>`, `--stop-at <ISO8601>`, `--name "..."`, `--paused` (create it off). The CLI refuses a missing `--dm`, both post flags at once, and a comment trigger on a post without a post, before it calls the API. Errors: `400 post_required`, `400 post_not_instagram`, `404 post_not_found`, `404 instagram_media_not_found`, `409 instagram_not_connected`, `409 instagram_needs_reauth`, `409 automation_exists` (the CLI names the existing automation) |
+| `automations:update <id>` | Changes only what you pass; everything else keeps its stored value (new `--keywords` keep the triggers, the scope and the match; a new `--dm` keeps the public reply; `--stop-at` keeps `--max-sends`). Same flags as `automations:create`, plus `--pause` and `--resume`. `--keywords` is the full new keyword list. Another `--post-id` / `--instagram-media-id` moves the automation to that post. A `completed` automation starts again when its limits or trigger change |
+| `automations:delete <id>` | Delete it. Confirm with the user first. DMs that already went out stay |
+| `automations:events <id>` | Activity: a counts line (sent, skipped, failed, pending over the whole automation), then one line per event with the time, the kind (comment, DM, story reply), the outcome with its reason (`already_sent`, `limit_reached`, `stopped`, `window_passed`, `rate_limited`, or the platform's error text), the person, what they wrote (a comment; a DM or story reply only when the key also has `inbox:read`) and the DM that went out. Flags: `--outcome sent\|skipped\|failed\|pending`, `--limit <1-100>` (default 25), `--offset` |
 
 ### Locations
 
@@ -317,6 +336,8 @@ A custom thumbnail for a Short goes through `--video-cover-json` (see **Video co
 | `--instagram-trial-reel` | Publish the reel as a **Trial Reel** — shown to non-followers first to test performance. ONLY use when the user explicitly asks for a Trial Reel. **Reels only.** Not available on every account: Instagram requires roughly 1,000+ followers and enables the feature per account; ineligible accounts fail at publish with a clear error. |
 | `--instagram-trial-graduation-strategy` | How a Trial Reel graduates to all followers: `MANUAL` (default — the user decides in the Instagram app) or `SS_PERFORMANCE` (Instagram shares it automatically if it performs well). Only with `--instagram-trial-reel` |
 
+Feed image ratio (`--media-fit instagram=crop|keep`, a top-level flag, not an `--instagram-*` one): Instagram accepts a feed image from 9:16 to 1.91:1 but shows only 4:5 to 1.91:1 and cuts a taller image to 4:5 itself; Meta cannot boost a feed post outside that range. Without the flag OmniSocials crops a tall or wide image to 4:5 / 1.91:1 around the subject for the Instagram channel only (the other channels keep the original) and prints an `[image_fit]` warning with the crop URL after the post is created. `instagram=keep` sends the original (Instagram then cuts it, no boost). `posts:update <id> --media-fit instagram=keep` gives the original back on a draft or scheduled post; `instagram=crop` crops a kept image. Ratios outside 9:16 to 1.91:1 are still a `400 validation_error`. See **Per-Platform Media** and Safety Rules, rule 4.
+
 #### Auto first comment (Instagram, Facebook, LinkedIn, YouTube, TikTok)
 Posts the given text as the first comment automatically, right after the post publishes. Common for keeping hashtags or a link out of the main caption. One flag per channel, so you can set a different first comment per platform in the same call. Not posted for stories.
 
@@ -410,7 +431,7 @@ omnisocials posts:create \
 | `--google-business-cta-action` | CTA button under the post: `LEARN_MORE`, `BOOK`, `ORDER`, `SHOP`, `SIGN_UP`, `CALL`. **GBP captions reject inline links and phone numbers** — the CTA button is the ONLY way to attach either, so when the user wants a link on a Google Business post, use this |
 | `--google-business-cta-url` | CTA target URL, `http(s)://`. Required for every action except `CALL` (which uses the location's phone number from the business profile) |
 | `--google-business-topic-type` | Post type: `STANDARD` (default), `EVENT`, `OFFER` |
-| `--google-business-json` | Full `google_business` JSON object for the EVENT/OFFER shapes (`event.title` + `event.schedule` with Google's split `{year,month,day}`/`{hours,minutes}` dates; `offer.couponCode`/`redeemOnlineUrl`/`termsConditions`). Merged over the other `--google-business-*` flags |
+| `--google-business-json` | Full `google_business` JSON object for the EVENT/OFFER shapes (`event.title` + `event.schedule` with Google's split `{year,month,day}`/`{hours,minutes}` dates, required for EVENT and OFFER: on an offer it is the offer's name and validity period; `offer.couponCode`/`redeemOnlineUrl`/`termsConditions`). Merged over the other `--google-business-*` flags |
 
 All four also work on `posts:update <id>` to add or change the CTA on a draft/scheduled post (the stored `google_business` object is replaced wholesale, so send the full shape).
 
@@ -418,6 +439,9 @@ All four also work on `posts:update <id>` to add or change the CTA on a draft/sc
 | Flag | Description |
 |---|---|
 | `--x-reply-settings` | Who can reply: `following` or `mentionedUsers` (empty string = everyone) |
+| `--x-poll-json` | A poll on the X post, the text is the question: `{"options":["A","B"],"duration_minutes":1440}` (2 to 4 options of up to 25 chars; 5 to 10080 minutes, default 1440). No media on X together with a poll; on a thread the poll goes on the first tweet. `null` on `posts:update` removes it. |
+| `--threads-poll-json` | A poll on the Threads post: `{"options":["A","B"]}` (2 to 4 options of 1 to 25 chars). Threads closes it after 24 hours. Text-only post. `null` on `posts:update` removes it. |
+| `--mastodon-poll-json` | A poll on the Mastodon status: `{"options":["A","B"],"expires_in":86400,"multiple":false,"hide_totals":false}` (limits come from the instance; default 4 options of 50 chars, 5 minutes to 1 month). No media with a poll. `null` on `posts:update` removes it. |
 | `--x-thread "a \|\| b \|\| c"` | Post a thread. Parts are split on `\|\|` (2–25 parts). For per-tweet media, build the post with `--json` and a full `x.thread_parts` array instead. |
 | `--bluesky-thread "a \|\| b \|\| c"` | Post a Bluesky thread. Parts are split on `\|\|` (2–25 parts, each ≤ 300 chars). Links, mentions and hashtags become clickable automatically. For per-post media, build the post with `--json` and a full `bluesky.thread_parts` array instead. |
 | `--mastodon-thread "a \|\| b \|\| c"` | Post a Mastodon thread. Parts are split on `\|\|` (2–25 parts, each ≤ 500 chars). Each toot replies to the previous one natively. For per-toot media, build the post with `--json` and a full `mastodon.thread_parts` array instead. |
@@ -450,6 +474,8 @@ Media can be the same across all platforms or different per platform:
 
 **Different media per platform** (use `--json` flag and API directly for per-platform media objects):
 The API supports `media_urls` as an object: `{ "default": ["url1"], "instagram": ["url2"], "pinterest": ["url3"] }`. The `default` key is the fallback for platforms without their own key. Pass an empty array to opt a platform out of media.
+
+**Image fit per channel (`--media-fit`):** a feed image whose ratio is outside what a channel shows uncropped is cropped or kept per channel. `--media-fit instagram=keep,pinterest=crop` sets it (`<channel>=<auto|crop|keep>`, comma-separated; sent as the top-level `media_fit` object). Defaults (`auto`): Instagram crops a 9:16 image to 4:5 (a wide one to 1.91:1) around the image's focus point, because Instagram cuts it to that window anyway and Meta cannot boost a feed post outside 4:5 to 1.91:1; Pinterest keeps a Pin taller than 2:3 and reports that the home feed may cut it (`pinterest=crop` crops to 2:3). The crop is a file of its own for that channel only; `default` and every other channel keep the original. Feed posts only: stories, reels, TikTok photos and videos are never touched, and X, LinkedIn, Mastodon and Google Business show a tall image whole, so they have no rule. Every decision is printed as a `[image_fit]` warning after `posts:create`, `posts:create-and-publish` and `posts:update` (action `cropped` with the crop URL, `kept`, or `crop_failed` = the original was sent and the platform cuts it itself); `--json` carries the same `warnings` array next to `data`. `posts:update <id> --media-fit instagram=keep` alone re-decides the stored images and gives the original back; `posts:get --json` shows `fit` and `crop: { of, id, ratio, focus }` on the channel's media item. The focus point is set in the dashboard only; for your own crop, pass a different file for that channel through the per-platform `media_urls` object (above). Check first with `media:check --media-id <id>` (see Media).
 
 **PDF by URL:** a PDF passed via `--media-urls` (or `media_urls` in the API) is rasterized into one image slide per page (max 20, in order) and the original file is kept — on LinkedIn it publishes as a swipeable document made from that original PDF, elsewhere as an image carousel. Same behaviour as uploading the PDF via `media:upload`.
 
@@ -497,6 +523,22 @@ link: https://example.com/shop"
 ./scripts/omnisocials.js posts:create --text "Autumn outfit" --channels <pinterest_id> --media-urls "https://example.com/outfit.jpg" --pinterest-board-id <board_id> --pinterest-product-tags 813744226420795884,813744226420795885
 ```
 Max 24 products per Pin, and only product Pins of the connected Pinterest account. A product that Pinterest refuses does not fail the post: after publishing, `posts:list` prints `Pinterest products: 1 of 2 tagged (skipped: <pin_id> <reason>)`.
+
+### Send a DM to everyone who comments a keyword (comment to DM)
+```
+# A new post with its automation (Instagram must be in --channels). Confirm the DM text and the keyword with the user first
+./scripts/omnisocials.js posts:create --text "Comment GUIDE for the free checklist" --channels <instagram_id> --media-urls "https://example.com/photo.jpg" --schedule "2026-10-12T09:00:00Z" --dm-keywords "guide" --dm-message "Here is the checklist: https://example.com/guide" --dm-reply "Sent you a DM!"
+# Prints: Comment-to-DM: on (keywords: guide; id 100000006). It starts listening once the post is live on Instagram
+
+# An automation on a post that exists (posts:list for the id; a post published outside OmniSocials takes --instagram-media-id)
+./scripts/omnisocials.js automations:create --post-id 83778183 --keywords "guide,link" --dm "Here is the guide: https://example.com/guide" --reply "Sent you a DM!" --reply "Check your inbox" --max-sends 500
+
+# What happened: who commented, who got the DM, and why someone was skipped
+./scripts/omnisocials.js automations:events 100000004
+# Prints: Counts: 12 sent, 3 skipped, then one line per event:
+# 2026-10-10T21:40:00.000Z  comment  sent  @jane  "guide please"  DM: "Here is the guide: ..."
+```
+Pause it with `automations:update <id> --pause`, change the keywords with `--keywords "<full list>"`, remove a post's automation with `posts:update <post_id> --no-dm`. Needs the opt-in `automations:read` / `automations:write` scopes on the key.
 
 ### Upload media and create a post with it
 ```
@@ -669,13 +711,16 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 |---|---|---|
 | `API key not found` | No API key configured | Run `setup` or set `OMNISOCIALS_API_KEY` |
 | `unauthorized` / `invalid_api_key` | Invalid or expired API key | Check key at Settings > API |
-| `insufficient_scope` | API key missing required scope | Create a new key with needed scopes |
+| `insufficient_scope` | API key missing required scope | Create a new key with needed scopes. On `automations:*` or the `--dm-*` post flags: Automations is opt-in on the key, enable it under Settings > API (adds `automations:read` and `automations:write`) |
 | `rate_limit_exceeded` | Too many requests (100/min limit) | Wait and retry after the reset time |
 | `validation_error` | Missing required fields or invalid data | Check required media/fields for the platform |
 | `not_found` | Resource doesn't exist | Verify the ID is correct |
 | `max_retries_reached` | A platform on this post already failed 3 retries | Recreate the post with `posts:create` |
 | `pinterest_not_connected` | `pinterest:products` on a workspace without a Pinterest account | Ask the user to connect Pinterest in the dashboard |
 | `pinterest_catalog_access_required` | `pinterest:products --source catalog` on a connection without catalog access | Ask the user to connect the catalog (composer, Pinterest options, Add products, Connect catalog), or run `pinterest:products --source pins` |
+| `automation_exists` | The post already has a comment-to-DM automation (one per post) | Change it with `automations:update <id>` (the CLI prints the id), or delete it first |
+| `post_required` / `post_not_instagram` | A comment automation on a post without `--post-id` / `--instagram-media-id`, or on a post that does not go to Instagram | Pass a post that has Instagram in its channels, or use `--scope next_post` / `--scope any` |
+| `instagram_not_connected` / `instagram_needs_reauth` | No Instagram account in the workspace, or its connection expired | Ask the user to connect or reconnect Instagram in the dashboard |
 
 ### Rate Limits
 
@@ -691,6 +736,7 @@ The API allows 100 requests per minute per API key. Response headers include:
 - **Check content types**: Use `accounts:list` to see what content types each account supports (post, story, reel)
 - **Pinterest boards**: Run `accounts:get <pinterest_id>` to see available boards and their IDs
 - **Pinterest product tags**: Run `pinterest:products` to get product Pin IDs for `--pinterest-product-tags` (max 24, own product Pins only)
+- **Comment to DM**: an automation made with a post (`--dm-keywords` + `--dm-message`) starts once the post is live on Instagram; `automations:events <id>` shows every comment it answered or skipped
 - **Scheduling**: Use ISO 8601 format for dates (e.g., `2026-04-10T14:00:00Z`)
 - **Media upload**: Supports JPEG, PNG, GIF, WebP images and MP4, MOV, AVI videos (max 50MB)
-- **Draft first**: When unsure, create as draft (no `--schedule`), review, then publish with `posts:publish`
+- **Draft first**: When unsure, create as draft (no `--schedule`), review, then publish with `posts:publish`. To propose a time without publishing, use `--schedule` with `--draft` (a planned draft) and let the user confirm with `posts:update <id> --no-draft`

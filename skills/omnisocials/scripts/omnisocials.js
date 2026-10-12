@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.31.0";
+const VERSION = "1.31.1";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -134,6 +134,11 @@ async function apiRequest(config, method, apiPath, body, queryParams) {
 
 // ─── Argument Parser ────────────────────────────────────────────────────────
 
+// Flags that may be given more than once. Their values are collected in an
+// array in the order given (one public-reply variation per --reply). Every
+// other flag keeps its last value when repeated.
+const REPEATABLE_FLAGS = new Set(["reply", "dm-reply"]);
+
 function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args[0] && !args[0].startsWith("-") ? args[0] : null;
@@ -147,11 +152,17 @@ function parseArgs(argv) {
       const key = arg.slice(2);
       const next = args[i + 1];
       // Boolean flags (no value or next arg is also a flag)
+      let value;
       if (!next || next.startsWith("--")) {
-        flags[key] = true;
+        value = true;
       } else {
-        flags[key] = next;
+        value = next;
         i++;
+      }
+      if (REPEATABLE_FLAGS.has(key) && flags[key] !== undefined) {
+        flags[key] = [].concat(flags[key], value);
+      } else {
+        flags[key] = value;
       }
     } else if (!command || positional.length > 0 || !arg.startsWith("-")) {
       positional.push(arg);
@@ -190,6 +201,37 @@ function splitProductTags(value) {
     );
   }
   return tags;
+}
+
+// --media-fit instagram=keep,pinterest=crop: what happens to a feed image
+// whose ratio is outside what a channel shows uncropped, per channel. Actions:
+// auto (the API's default: Instagram crops a tall or wide image to 4:5 /
+// 1.91:1 around the subject because Instagram cuts it to that window anyway
+// and Meta cannot boost a feed post outside it; Pinterest keeps a Pin taller
+// than 2:3 and reports it), crop, keep. Sent as the top-level `media_fit`
+// object; every decision comes back in `warnings` with code image_fit. The
+// API validates the same values; the CLI refuses a malformed flag before the
+// call so a typo never creates a post with the wrong fit.
+const MEDIA_FIT_ACTIONS = ["auto", "crop", "keep"];
+function parseMediaFit(value) {
+  const usage =
+    '--media-fit takes <channel>=<auto|crop|keep> pairs separated by commas, e.g. "instagram=keep,pinterest=crop"';
+  const pairs = splitComma(value === true ? "" : String(value));
+  if (!pairs || !pairs.length) exitWithError(usage);
+  const out = {};
+  for (const pair of pairs) {
+    const parts = pair.split("=").map((s) => s.trim());
+    const [platform, action] = parts;
+    if (parts.length !== 2 || !platform || !action) exitWithError(usage);
+    if (!PLATFORMS.includes(platform)) {
+      exitWithError(`--media-fit: unknown channel "${platform}". ${usage}`);
+    }
+    if (!MEDIA_FIT_ACTIONS.includes(action)) {
+      exitWithError(`--media-fit: "${action}" is not an action for ${platform}. ${usage}`);
+    }
+    out[platform] = action;
+  }
+  return out;
 }
 
 function assemblePlatformOptions(flags) {
@@ -275,6 +317,27 @@ function assemblePlatformOptions(flags) {
     },
   };
 
+  // Polls on X, Threads and Mastodon (one JSON object per channel, nested
+  // under that channel's options as `poll`; the post text is the question).
+  // 'null' on posts:update removes the poll.
+  for (const [platform, flag] of [
+    ["x", "x-poll-json"],
+    ["threads", "threads-poll-json"],
+    ["mastodon", "mastodon-poll-json"],
+  ]) {
+    if (flags[flag] === undefined) continue;
+    let parsed;
+    try {
+      parsed = JSON.parse(flags[flag]);
+    } catch {
+      exitWithError(
+        `--${flag} must be JSON, e.g. '{"options":["A","B"]}' or 'null' to remove the poll`
+      );
+    }
+    if (!platforms[platform]) platforms[platform] = {};
+    platforms[platform].poll = parsed;
+  }
+
   for (const [platform, fields] of Object.entries(mapping)) {
     for (const [flag, spec] of Object.entries(fields)) {
       if (flags[flag] !== undefined) {
@@ -289,6 +352,220 @@ function assemblePlatformOptions(flags) {
   }
 
   return platforms;
+}
+
+// ─── Comment-to-DM Automations ──────────────────────────────────────────────
+
+// An automation answers a keyword in an Instagram comment (or a DM, or a story
+// reply) with a DM, once per person, with an optional public reply under the
+// comment. Instagram allows one private reply per comment within 7 days, and
+// OmniSocials sends at most 180 DMs an hour per account. The scopes are opt-in
+// on the key: without them every call answers 403 insufficient_scope.
+const AUTOMATION_MATCHES = ["word", "contains", "any"];
+const AUTOMATION_SCOPES = ["post", "next_post", "any"];
+const AUTOMATION_KINDS = ["comment", "dm", "story_reply"];
+const AUTOMATION_STATUSES = ["active", "paused", "completed"];
+const AUTOMATION_EVENT_OUTCOMES = ["sent", "skipped", "failed", "pending"];
+const AUTOMATIONS_SCOPE_HINT =
+  "Enable Automations on the API key (Settings > API: adds automations:read and automations:write).";
+
+// The value of a flag that needs one; a bare flag is a CLI error.
+function requireValue(flag, value) {
+  const v = value === true ? "" : String(value).trim();
+  if (!v) exitWithError(`${flag} needs a value`);
+  return v;
+}
+
+// One value out of a fixed list, or a CLI error that names the list.
+function pickOneOf(flag, value, allowed) {
+  const v = value === true ? "" : String(value).trim();
+  if (!allowed.includes(v)) {
+    exitWithError(`${flag} must be one of ${allowed.join("|")}${v ? ` (got "${v}")` : ""}`);
+  }
+  return v;
+}
+
+// A comma list of values out of a fixed list (--triggers comment,dm).
+function pickSomeOf(flag, value, allowed) {
+  const values = splitComma(value === true ? "" : String(value));
+  if (!values || !values.length) exitWithError(`${flag} takes a comma list of ${allowed.join("|")}`);
+  for (const v of values) {
+    if (!allowed.includes(v)) exitWithError(`${flag}: "${v}" is not one of ${allowed.join("|")}`);
+  }
+  return values;
+}
+
+// --keywords "guide,link": up to 20 words of 60 chars; the API checks those.
+function splitKeywords(flag, value) {
+  const keywords = splitComma(value === true ? "" : String(value));
+  if (!keywords || !keywords.length) {
+    exitWithError(`${flag} needs a comma-separated list, e.g. ${flag} "guide,link"`);
+  }
+  return keywords;
+}
+
+// --reply "Sent you a DM!" --reply "Check your inbox" (one variation per
+// flag, see REPEATABLE_FLAGS) or --reply "Sent you a DM!,Check your inbox" (a
+// comma list). A reply that contains a comma goes in a flag of its own.
+function splitReplyVariations(flag, value) {
+  const variations = Array.isArray(value)
+    ? value.map((v) => (v === true ? "" : String(v).trim())).filter(Boolean)
+    : splitComma(value === true ? "" : String(value));
+  if (!variations || !variations.length) {
+    exitWithError(`${flag} needs the text of a public reply, e.g. ${flag} "Sent you a DM!"`);
+  }
+  return variations;
+}
+
+// --max-sends 500: a whole number above zero.
+function parseMaxSends(flag, value) {
+  const n = value === true ? NaN : Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    exitWithError(`${flag} must be a whole number above 0${value === true ? "" : ` (got "${value}")`}`);
+  }
+  return n;
+}
+
+// --stop-at 2026-12-31T00:00:00Z: a time Date.parse understands, sent as given.
+function parseStopAt(flag, value) {
+  const v = requireValue(flag, value);
+  if (Number.isNaN(Date.parse(v))) exitWithError(`${flag} must be an ISO 8601 time, e.g. 2026-12-31T00:00:00Z`);
+  return v;
+}
+
+// The body of automations:create (every section, the API's defaults spelled
+// out) and of automations:update (`partial`: only the sections whose flags
+// were given, so the rest stays as stored). Shape:
+//   { name, post_id | instagram_media_id,
+//     trigger: { kinds, scope, keywords, match },
+//     actions: { dm: { text }, public_reply: { enabled, variations } },
+//     limits: { max_sends, stop_at }, status }
+// `scope` only means something for the comment trigger (post = the post
+// named here, next_post = the next Instagram post the workspace publishes,
+// any = every post); on create it is sent when a comment trigger is in.
+function buildAutomationBody(flags, { partial = false } = {}) {
+  const body = {};
+
+  if (flags.name !== undefined) body.name = requireValue("--name", flags.name);
+
+  if (flags["post-id"] !== undefined && flags["instagram-media-id"] !== undefined) {
+    exitWithError(
+      "Pass --post-id (an OmniSocials post that goes to Instagram) or --instagram-media-id (a post published outside OmniSocials), not both."
+    );
+  }
+  if (flags["post-id"] !== undefined) body.post_id = requireValue("--post-id", flags["post-id"]);
+  if (flags["instagram-media-id"] !== undefined) {
+    body.instagram_media_id = requireValue("--instagram-media-id", flags["instagram-media-id"]);
+  }
+
+  const triggerGiven = ["keywords", "match", "scope", "triggers"].some((f) => flags[f] !== undefined);
+  if (!partial || triggerGiven) {
+    const trigger = {};
+    const kinds =
+      flags.triggers !== undefined
+        ? pickSomeOf("--triggers", flags.triggers, AUTOMATION_KINDS)
+        : partial
+          ? undefined
+          : ["comment"];
+    if (kinds) trigger.kinds = kinds;
+    if (flags.scope !== undefined) trigger.scope = pickOneOf("--scope", flags.scope, AUTOMATION_SCOPES);
+    else if (!partial && kinds.includes("comment")) trigger.scope = "post";
+    if (flags.keywords !== undefined) trigger.keywords = splitKeywords("--keywords", flags.keywords);
+    if (flags.match !== undefined) trigger.match = pickOneOf("--match", flags.match, AUTOMATION_MATCHES);
+    else if (!partial) trigger.match = "word";
+    body.trigger = trigger;
+
+    // A comment trigger on "this post" needs the post; the API would answer
+    // 400 post_required, but the fix is a flag, so say so before the call.
+    if (
+      !partial &&
+      trigger.scope === "post" &&
+      trigger.kinds.includes("comment") &&
+      body.post_id === undefined &&
+      body.instagram_media_id === undefined
+    ) {
+      exitWithError(
+        "A comment automation on a post needs the post: pass --post-id <id> (an OmniSocials post that goes to Instagram) or --instagram-media-id <id> (a post published outside OmniSocials), or pick --scope next_post or --scope any."
+      );
+    }
+  }
+
+  if (!partial && flags.dm === undefined) {
+    exitWithError('--dm "<text>" is required: the DM the automation sends (max 1000 chars)');
+  }
+  if (flags.dm !== undefined || flags.reply !== undefined) {
+    const actions = {};
+    if (flags.dm !== undefined) actions.dm = { text: requireValue("--dm", flags.dm) };
+    if (flags.reply !== undefined) {
+      actions.public_reply = { enabled: true, variations: splitReplyVariations("--reply", flags.reply) };
+    }
+    body.actions = actions;
+  }
+
+  if (flags["max-sends"] !== undefined || flags["stop-at"] !== undefined) {
+    const limits = {};
+    if (flags["max-sends"] !== undefined) limits.max_sends = parseMaxSends("--max-sends", flags["max-sends"]);
+    if (flags["stop-at"] !== undefined) limits.stop_at = parseStopAt("--stop-at", flags["stop-at"]);
+    body.limits = limits;
+  }
+
+  const isOn = (v) => v === true || v === "true";
+  if (partial) {
+    const pause = isOn(flags.pause) || isOn(flags.paused);
+    const resume = isOn(flags.resume);
+    if (pause && resume) exitWithError("Pass --pause or --resume, not both.");
+    if (pause) body.status = "paused";
+    if (resume) body.status = "active";
+  } else if (isOn(flags.paused)) {
+    body.status = "paused";
+  }
+
+  return body;
+}
+
+// --dm-keywords / --dm-message / --dm-reply / --dm-match / --dm-max-sends /
+// --dm-stop-at on posts:create, posts:create-and-publish and posts:update
+// build the post's `comment_dm_automation`: the automation bound to this
+// post (Instagram must be in --channels; it starts listening once the post is
+// live on Instagram). Its shape is the create body without post, scope,
+// kinds, name and status. posts:update --no-dm sends null, which removes it.
+// Returns undefined when no flag was given, so the key stays out of the body.
+const POST_DM_FLAGS = ["dm-keywords", "dm-message", "dm-reply", "dm-match", "dm-max-sends", "dm-stop-at"];
+function buildPostCommentDm(flags) {
+  const given = POST_DM_FLAGS.filter((f) => flags[f] !== undefined);
+  if (flags["no-dm"] === true) {
+    if (given.length) {
+      exitWithError(`--no-dm removes the post's comment-to-DM automation and cannot go with --${given[0]}`);
+    }
+    return null;
+  }
+  if (!given.length) return undefined;
+
+  const match = flags["dm-match"] !== undefined ? pickOneOf("--dm-match", flags["dm-match"], AUTOMATION_MATCHES) : "word";
+  if (flags["dm-message"] === undefined) {
+    exitWithError('A comment-to-DM automation needs the DM: pass --dm-message "<text>" next to --dm-keywords');
+  }
+  if (flags["dm-keywords"] === undefined && match !== "any") {
+    exitWithError(
+      'A comment-to-DM automation needs its keywords: pass --dm-keywords "guide,link" next to --dm-message (or --dm-match any to answer every comment)'
+    );
+  }
+
+  const trigger = { match };
+  if (flags["dm-keywords"] !== undefined) trigger.keywords = splitKeywords("--dm-keywords", flags["dm-keywords"]);
+  const actions = { dm: { text: requireValue("--dm-message", flags["dm-message"]) } };
+  if (flags["dm-reply"] !== undefined) {
+    actions.public_reply = { enabled: true, variations: splitReplyVariations("--dm-reply", flags["dm-reply"]) };
+  }
+  const automation = { trigger, actions };
+  if (flags["dm-max-sends"] !== undefined || flags["dm-stop-at"] !== undefined) {
+    automation.limits = {};
+    if (flags["dm-max-sends"] !== undefined) {
+      automation.limits.max_sends = parseMaxSends("--dm-max-sends", flags["dm-max-sends"]);
+    }
+    if (flags["dm-stop-at"] !== undefined) automation.limits.stop_at = parseStopAt("--dm-stop-at", flags["dm-stop-at"]);
+  }
+  return automation;
 }
 
 // Assemble the request body shared by posts:create, posts:create-and-publish,
@@ -307,9 +584,20 @@ function buildPostBody(flags) {
   if (flags.channels) body.channels = splitComma(flags.channels);
   // API accepts both schedule_at and scheduled_at; send the documented name.
   if (flags.schedule) body.schedule_at = flags.schedule;
+  // Planned draft: --draft keeps --schedule as the planned time but stores
+  // the post as a draft (dashed on the calendar, never published by the
+  // scheduler). posts:update takes --no-draft (or --draft false) to schedule
+  // a planned draft at the time it carries, and --draft to unschedule.
+  if (flags["no-draft"] === true || flags.draft === "false") body.draft = false;
+  else if (flags.draft === true || flags.draft === "true") body.draft = true;
   if (flags.type) body.type = flags.type;
   if (flags["media-ids"]) body.media_ids = splitComma(flags["media-ids"]);
   if (flags["media-urls"]) body.media_urls = splitComma(flags["media-urls"]);
+
+  // Image fit per channel (see parseMediaFit). On posts:update without media
+  // the API re-decides the stored images: keep gives the original back, crop
+  // crops an image that was kept.
+  if (flags["media-fit"] !== undefined) body.media_fit = parseMediaFit(flags["media-fit"]);
 
   // Link preview (LinkedIn / Facebook) — top-level fields.
   if (flags["link-url"]) body.link_url = flags["link-url"];
@@ -325,6 +613,11 @@ function buildPostBody(flags) {
   // Approval workflow — top-level; the post is created as in_approval and
   // publishes at --schedule once the workflow's last step approves it.
   if (flags["approval-workflow"]) body.approval_workflow_id = String(flags["approval-workflow"]);
+
+  // Comment-to-DM automation bound to this post (see buildPostCommentDm).
+  // Top-level `comment_dm_automation`; null on posts:update removes it.
+  const commentDm = buildPostCommentDm(flags);
+  if (commentDm !== undefined) body.comment_dm_automation = commentDm;
 
   // Instagram extras — top-level (not nested under `instagram`).
   if (flags["location-id"]) body.location_id = flags["location-id"];
@@ -480,6 +773,52 @@ function outputJson(data) {
   console.log(JSON.stringify(data, null, 2));
 }
 
+// The API's non-blocking notices: `warnings`, a sibling of `data` on post
+// create and update. Codes today: x_url_post_credits (X link-post fee) and
+// image_fit (a feed image cropped or kept per channel, with the undo hint in
+// its message). Printed after the result so an agent relays them to the
+// person; --json carries them unchanged and never reaches this.
+function printWarnings(warnings) {
+  if (!Array.isArray(warnings) || !warnings.length) return;
+  console.log("");
+  console.log(`Warnings (${warnings.length}):`);
+  for (const w of warnings) {
+    const code = w && w.code ? w.code : "warning";
+    const message = w && w.message ? w.message : JSON.stringify(w);
+    console.log(`  [${code}] ${message}`);
+    if (w && w.code === "image_fit" && w.crop_url) console.log(`    crop: ${w.crop_url}`);
+  }
+}
+
+// `fit` rows of POST /media/check: how each connected channel with an image
+// fit rule shows this image as a feed post. Only a library image with a known
+// size (--media-id) gets rows; videos and URL checks answer an empty array.
+// Ends with the --media-fit value that overrides every default shown.
+function printImageFit(fit) {
+  if (!Array.isArray(fit) || !fit.length) return;
+  console.log("");
+  console.log("Image fit (feed posts):");
+  for (const row of fit) {
+    const name = row.display_name || row.platform;
+    if (row.fits) {
+      console.log(`  ${name}: ${row.ratio}, shown whole`);
+      continue;
+    }
+    const action =
+      row.default_action === "crop"
+        ? `crop to ${row.target} around the subject`
+        : `keep the original (${name} may cut it; crop target ${row.target})`;
+    console.log(`  ${name}: ${row.ratio}, outside the window ${name} shows uncropped; default: ${action}`);
+    if (row.message) console.log(`    ${row.message}`);
+  }
+  const overrides = fit
+    .filter((row) => !row.fits && row.platform)
+    .map((row) => `${row.platform}=${row.default_action === "crop" ? "keep" : "crop"}`);
+  if (overrides.length) {
+    console.log(`  Override on posts:create / posts:update with --media-fit ${overrides.join(",")}`);
+  }
+}
+
 function truncate(str, len) {
   if (!str) return "";
   str = String(str).replace(/\n/g, " ");
@@ -601,6 +940,126 @@ function formatWebhook(webhook, index) {
     lines.push(`    Last triggered: ${webhook.last_triggered_at}`);
   }
   return lines.join("\n");
+}
+
+// --- Automations ---
+
+const AUTOMATION_KIND_WORDS = { comment: "comment", dm: "DM", story_reply: "story reply" };
+const AUTOMATION_SCOPE_WORDS = {
+  post: "this post",
+  next_post: "the next Instagram post",
+  any: "every post",
+};
+
+// "comment on this post; keywords: guide, link (whole word)"
+function describeTrigger(trigger) {
+  const t = trigger || {};
+  const kinds = (Array.isArray(t.kinds) ? t.kinds : []).map((k) => AUTOMATION_KIND_WORDS[k] || k);
+  let line = kinds.length ? kinds.join(", ") : "(no trigger)";
+  if (t.scope && AUTOMATION_SCOPE_WORDS[t.scope]) line += ` on ${AUTOMATION_SCOPE_WORDS[t.scope]}`;
+  if (t.match === "any") return `${line}; no keyword, every one counts`;
+  const words = Array.isArray(t.keywords) && t.keywords.length ? t.keywords.join(", ") : "(none)";
+  const how = t.match === "contains" ? "anywhere in the text" : "whole word";
+  return `${line}; keywords: ${words} (${how})`;
+}
+
+// The post an automation listens on: the caption when the snapshot has one,
+// the permalink when there is one, else only the id. `post` is null until
+// the automation has a post (next_post and any have none).
+function describeAutomationPost(a) {
+  const p = a.post;
+  if (p && typeof p === "object") {
+    const name = p.source === "instagram" ? `Instagram media ${p.id}` : `post ${p.id}`;
+    const parts = [];
+    if (p.caption) parts.push(`"${truncate(p.caption, 60)}"`);
+    if (p.permalink) parts.push(p.permalink);
+    const state = p.source === "omnisocials" ? (p.live ? "live" : p.status || "") : "";
+    return `${name}${parts.length ? `: ${parts.join("  ")}` : ""}${state ? `  (${state})` : ""}`;
+  }
+  if (a.post_id) {
+    return `post ${a.post_id}${a.instagram_media_id ? `  (Instagram media ${a.instagram_media_id})` : ""}`;
+  }
+  if (a.instagram_media_id) return `Instagram media ${a.instagram_media_id}`;
+  return "";
+}
+
+function describeAutomationStats(stats) {
+  const s = stats || {};
+  const n = (v) => (typeof v === "number" ? v : 0);
+  return `${n(s.sent)} sent / ${n(s.matched)} matched / ${n(s.skipped)} skipped / ${n(s.failed)} failed`;
+}
+
+// One automation in automations:list.
+function formatAutomationRow(a) {
+  const lines = [];
+  lines.push(`ID: ${a.id}  ${a.status}${a.name ? `  ${a.name}` : ""}`);
+  lines.push(`  Trigger: ${describeTrigger(a.trigger)}`);
+  const post = describeAutomationPost(a);
+  if (post) lines.push(`  Post: ${post}`);
+  lines.push(`  Stats: ${describeAutomationStats(a.stats)}`);
+  return lines.join("\n");
+}
+
+// The whole automation, for automations:get / create / update.
+function formatAutomationDetail(a) {
+  const lines = [];
+  lines.push(`ID: ${a.id}`);
+  lines.push(`Status: ${a.status}`);
+  if (a.name) lines.push(`Name: ${a.name}`);
+  lines.push(`Trigger: ${describeTrigger(a.trigger)}`);
+  const post = describeAutomationPost(a);
+  if (post) lines.push(`Post: ${post}`);
+  const actions = a.actions || {};
+  const dm = actions.dm && actions.dm.text ? actions.dm.text.replace(/\n/g, "\n    ") : "(none)";
+  lines.push(`DM: ${dm}`);
+  const reply = actions.public_reply || {};
+  const variations = Array.isArray(reply.variations) ? reply.variations : [];
+  lines.push(
+    `Public reply: ${reply.enabled && variations.length ? variations.map((v) => `"${v}"`).join(" | ") : "off"}`
+  );
+  const limits = a.limits || {};
+  const limitWords = [];
+  if (limits.max_sends) limitWords.push(`max ${limits.max_sends} DMs`);
+  if (limits.stop_at) limitWords.push(`stop at ${limits.stop_at}`);
+  lines.push(`Limits: ${limitWords.length ? limitWords.join("; ") : "none"}`);
+  const stats = a.stats || {};
+  lines.push(
+    `Stats: ${describeAutomationStats(stats)}${stats.last_event_at ? `  (last event ${stats.last_event_at})` : ""}`
+  );
+  if (a.created_at) lines.push(`Created: ${a.created_at}`);
+  if (a.updated_at) lines.push(`Updated: ${a.updated_at}`);
+  return lines.join("\n");
+}
+
+// One row of automations:events: time, kind, outcome (with the reason when
+// it was skipped or failed), who, what they wrote, the DM that went out.
+function formatAutomationEvent(e) {
+  const person = e.person || {};
+  const who = person.username ? `@${person.username}` : person.id ? `person ${person.id}` : "(unknown)";
+  let outcome = e.outcome || "?";
+  if (e.reason_label || e.reason) outcome += ` (${e.reason_label || e.reason})`;
+  const parts = [e.created_at || e.sent_at || "", AUTOMATION_KIND_WORDS[e.kind] || e.kind || "", outcome, who];
+  if (e.trigger_text) parts.push(`"${truncate(e.trigger_text, 60)}"`);
+  if (e.message) parts.push(`DM: "${truncate(e.message, 60)}"`);
+  return parts.filter(Boolean).join("  ");
+}
+
+// The post's comment-to-DM automation as posts:create / posts:update return
+// it when the request carried comment_dm_automation: the Automation object
+// (post: null) or null when the post has none (after --no-dm).
+function printCommentDm(automation) {
+  if (automation === null) {
+    console.log("Comment-to-DM: off");
+    return;
+  }
+  if (!automation || typeof automation !== "object") return;
+  const t = automation.trigger || {};
+  const keywords =
+    t.match === "any"
+      ? "every comment"
+      : `keywords: ${Array.isArray(t.keywords) && t.keywords.length ? t.keywords.join(", ") : "(none)"}`;
+  const state = automation.status === "active" || !automation.status ? "on" : automation.status;
+  console.log(`Comment-to-DM: ${state} (${keywords}; id ${automation.id})`);
 }
 
 // --- Social Inbox ---
@@ -774,11 +1233,35 @@ function handleResult(result, flags, formatter) {
     return;
   }
 
+  // Formatters get the API's `warnings` (post create/update) as a second
+  // argument; the ones that print posts pass them to printWarnings.
   if (formatter) {
-    formatter(result.data);
+    formatter(result.data, result.warnings);
   } else {
     outputJson(result.data);
   }
+}
+
+// handleResult plus the scope hint. Every automation call, and a post call
+// whose body carries comment_dm_automation, answers 403 insufficient_scope on
+// a key without the opt-in Automations scopes; the fix is a key setting, so
+// name it. A 409 automation_exists names the automation the post already has.
+function handleAutomationResult(result, flags, formatter) {
+  const error = result && result.error;
+  if (error && error.code === "insufficient_scope") {
+    if (flags.json) outputJson(result);
+    else console.error(`Error [${error.code}]: ${error.message}`);
+    console.error(AUTOMATIONS_SCOPE_HINT);
+    process.exit(1);
+  }
+  if (error && error.code === "automation_exists" && error.automation_id && !flags.json) {
+    console.error(`Error [${error.code}]: ${error.message}`);
+    console.error(
+      `The post already has automation ${error.automation_id}: change it with automations:update ${error.automation_id}, or delete it first.`
+    );
+    process.exit(1);
+  }
+  handleResult(result, flags, formatter);
 }
 
 // ─── Command Handlers ───────────────────────────────────────────────────────
@@ -993,13 +1476,18 @@ async function cmdPostsCreate(config, flags) {
 
   const result = await apiRequest(config, "POST", "/posts/create", body);
 
-  handleResult(result, flags, (data) => {
+  // With a comment-to-DM automation in the body a 403 is about the
+  // Automations scopes; the handler says where to turn them on.
+  const handle = body.comment_dm_automation !== undefined ? handleAutomationResult : handleResult;
+  handle(result, flags, (data, warnings) => {
     console.log(`Post created successfully!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
     const scheduledAt = data.schedule_at || data.scheduled_at;
-    if (scheduledAt) console.log(`Scheduled: ${scheduledAt}`);
+    if (scheduledAt) console.log(`${data.status === "draft" ? "Planned for" : "Scheduled"}: ${scheduledAt}`);
     if (data.app_url) console.log(`Open in OmniSocials: ${data.app_url}`);
+    if (data.comment_dm_automation !== undefined) printCommentDm(data.comment_dm_automation);
+    printWarnings(warnings);
   });
 }
 
@@ -1014,16 +1502,20 @@ async function cmdPostsCreateAndPublish(config, flags) {
 
   const body = buildPostBody(flags);
   if (body.content === undefined) body.content = "";
-  // create-and-publish ignores scheduling; drop it if a stray --schedule slipped in.
+  // create-and-publish ignores scheduling; drop it if a stray --schedule or --draft slipped in.
   delete body.schedule_at;
+  delete body.draft;
 
   const result = await apiRequest(config, "POST", "/posts/create-and-publish", body);
 
-  handleResult(result, flags, (data) => {
+  const handle = body.comment_dm_automation !== undefined ? handleAutomationResult : handleResult;
+  handle(result, flags, (data, warnings) => {
     console.log(`Post created and publishing!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
     if (data.app_url) console.log(`Open in OmniSocials: ${data.app_url}`);
+    if (data.comment_dm_automation !== undefined) printCommentDm(data.comment_dm_automation);
+    printWarnings(warnings);
   });
 }
 
@@ -1038,10 +1530,15 @@ async function cmdPostsUpdate(config, flags, positional) {
 
   const result = await apiRequest(config, "PATCH", `/posts/${id}`, body);
 
-  handleResult(result, flags, (data) => {
+  const handle = body.comment_dm_automation !== undefined ? handleAutomationResult : handleResult;
+  handle(result, flags, (data, warnings) => {
     console.log(`Post updated successfully!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
+    const scheduledAt = data.schedule_at || data.scheduled_at;
+    if (scheduledAt) console.log(`${data.status === "draft" ? "Planned for" : "Scheduled"}: ${scheduledAt}`);
+    if (data.comment_dm_automation !== undefined) printCommentDm(data.comment_dm_automation);
+    printWarnings(warnings);
   });
 }
 
@@ -1372,8 +1869,13 @@ async function cmdMediaCheck(config, flags) {
 
   const result = await apiRequest(config, "POST", "/media/check", body);
   // /media/check returns a top-level object (no `data` wrapper), so print the
-  // whole response rather than result.data (which would be undefined).
-  handleResult(result, flags, () => outputJson(result));
+  // whole response rather than result.data (which would be undefined). The
+  // `fit` rows (how each channel shows a library image as a feed post) are
+  // repeated in plain words below the JSON, with the --media-fit override.
+  handleResult(result, flags, () => {
+    outputJson(result);
+    printImageFit(result.fit);
+  });
 }
 
 async function cmdMediaUploadBase64(config, flags) {
@@ -1554,6 +2056,133 @@ async function cmdHashtagSetsDelete(config, flags, positional) {
   });
 }
 
+// --- Automations (comment to DM) ---
+// Bodies and checks: buildAutomationBody. Every call goes through
+// handleAutomationResult for the scope hint.
+
+async function cmdAutomationsList(config, flags) {
+  const query = {};
+  if (flags.status !== undefined) query.status = pickOneOf("--status", flags.status, AUTOMATION_STATUSES);
+  if (flags["post-id"] !== undefined) query.post_id = requireValue("--post-id", flags["post-id"]);
+
+  const result = await apiRequest(config, "GET", "/automations", undefined, query);
+  handleAutomationResult(result, flags, (data) => {
+    const rows = Array.isArray(data) ? data : [];
+    if (!rows.length) {
+      console.log("No automations found. Create one with automations:create.");
+      return;
+    }
+    console.log(`Automations (${rows.length})`);
+    console.log("─".repeat(40));
+    console.log(rows.map(formatAutomationRow).join("\n"));
+  });
+}
+
+async function cmdAutomationsGet(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id) {
+    exitWithError("Usage: omnisocials automations:get <id>");
+  }
+
+  const result = await apiRequest(config, "GET", `/automations/${id}`);
+  handleAutomationResult(result, flags, (d) => {
+    console.log(formatAutomationDetail(d));
+    console.log(`Activity: automations:events ${d.id}`);
+  });
+}
+
+async function cmdAutomationsCreate(config, flags) {
+  if (flags.dm === undefined) {
+    exitWithError(
+      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --paused]'
+    );
+  }
+
+  const body = buildAutomationBody(flags);
+  const result = await apiRequest(config, "POST", "/automations", body);
+  handleAutomationResult(result, flags, (d) => {
+    console.log("Automation created!");
+    console.log(formatAutomationDetail(d));
+    if (d.status === "paused") {
+      console.log(`Turn it on with: automations:update ${d.id} --resume`);
+    } else if (d.post_id && !d.instagram_media_id) {
+      console.log("It starts listening once the post is live on Instagram.");
+    }
+    console.log(`Activity: automations:events ${d.id}`);
+  });
+}
+
+async function cmdAutomationsUpdate(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id) {
+    exitWithError(
+      'Usage: omnisocials automations:update <id> [--keywords "guide,link" --match word|contains|any --dm "<text>" --reply "<text>" --post-id <id> | --instagram-media-id <id> --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --pause | --resume]'
+    );
+  }
+
+  const body = buildAutomationBody(flags, { partial: true });
+  if (!Object.keys(body).length) {
+    exitWithError("Nothing to update: pass at least one flag (see omnisocials --help)");
+  }
+
+  const result = await apiRequest(config, "PATCH", `/automations/${id}`, body);
+  handleAutomationResult(result, flags, (d) => {
+    console.log("Automation updated!");
+    console.log(formatAutomationDetail(d));
+  });
+}
+
+async function cmdAutomationsDelete(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id) {
+    exitWithError("Usage: omnisocials automations:delete <id>");
+  }
+
+  const result = await apiRequest(config, "DELETE", `/automations/${id}`);
+  handleAutomationResult(result, flags, () => {
+    console.log("Automation deleted. It sends nothing more; DMs that went out stay in the inbox.");
+  });
+}
+
+async function cmdAutomationsEvents(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id) {
+    exitWithError(
+      "Usage: omnisocials automations:events <id> [--outcome sent|skipped|failed|pending --limit <1-100> --offset <n>]"
+    );
+  }
+
+  const query = {};
+  if (flags.outcome !== undefined) query.outcome = pickOneOf("--outcome", flags.outcome, AUTOMATION_EVENT_OUTCOMES);
+  if (flags.limit !== undefined) query.limit = flags.limit;
+  if (flags.offset !== undefined) query.offset = flags.offset;
+
+  const result = await apiRequest(config, "GET", `/automations/${id}/events`, undefined, query);
+  handleAutomationResult(result, flags, (data) => {
+    const events = Array.isArray(data) ? data : [];
+    // `counts` covers every outcome of the automation, whatever --outcome
+    // asked for; `pagination.total` is the size of the list asked for.
+    const counts = result.counts && typeof result.counts === "object" ? result.counts : {};
+    const countWords = Object.entries(counts)
+      .map(([outcome, n]) => `${n} ${outcome}`)
+      .join(", ");
+    console.log(`Counts: ${countWords || "none yet"}`);
+    const pagination = result.pagination || {};
+    const total = typeof pagination.total === "number" ? pagination.total : events.length;
+    console.log(`Events (${total}${query.outcome ? `, ${query.outcome}` : ""})`);
+    if (!events.length) {
+      console.log("No events yet.");
+      return;
+    }
+    console.log("─".repeat(40));
+    console.log(events.map(formatAutomationEvent).join("\n"));
+    if (pagination.has_more) {
+      const next = (Number(pagination.offset) || 0) + (Number(pagination.limit) || events.length);
+      console.log(`\nMore: pass --offset ${next} for the next page.`);
+    }
+  });
+}
+
 // --- Locations (Instagram or Threads place tagging) ---
 // --platform instagram (default) searches Facebook Places for Instagram tags;
 // --platform threads searches Threads locations (DIFFERENT id namespace; a
@@ -1695,6 +2324,13 @@ async function cmdPinterestProducts(config, flags) {
     if (result.bookmark) {
       console.log(
         `No product Pins in this batch. There are more Pins to scan: run the same command with --bookmark "${result.bookmark}".`
+      );
+      return;
+    }
+    if (result.no_catalog) {
+      // Catalog access, but the account has no catalog yet (Pinterest 409).
+      console.log(
+        "The Pinterest account has no catalog yet. Add products at https://www.pinterest.com/business/catalogs/ and run the command again, or pass a product Pin link to posts:create --pinterest-product-tags."
       );
       return;
     }
@@ -2522,9 +3158,9 @@ POSTS
   posts:list                     List posts [--status --limit --offset]
   posts:get <id>                 Get post details
   posts:recent-platform          Fetch recent posts live from connected platforms [--limit --platforms] (analytics:read)
-  posts:create                   Create a post [--text --channels --schedule --type --media-urls --media-ids]
+  posts:create                   Create a post [--text --channels --schedule --draft --type --media-urls --media-ids --media-fit]
   posts:create-and-publish       Create and publish immediately
-  posts:update <id>              Update a draft/scheduled post
+  posts:update <id>              Update a draft/scheduled post [--no-draft schedules a planned draft, --draft unschedules]
   posts:publish <id>             Publish a post now (refuses failed posts; use posts:retry)
   posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
   posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step)
@@ -2536,7 +3172,7 @@ MEDIA
   media:list                     List media files [--limit --offset]
   media:upload                   Upload from URL (image, video, or PDF) [--url --filename --name --folder --folder-id --pdf-mode]
   media:upload-base64            Upload a local file or base64 [--file | --data --mime-type] [--name --folder --folder-id --pdf-mode]
-  media:check                    Check media compatibility [--url | --media-id | --size-bytes --mime]
+  media:check                    Check media compatibility [--url | --media-id | --size-bytes --mime]; a library image also gets an "Image fit" block: how Instagram and Pinterest show it as a feed post, with the --media-fit override
   media:delete <id>              Delete a media file
   (PDF: a PDF is split into one image slide per page — pass all returned media IDs to posts:create as a carousel. --pdf-mode document keeps it as ONE media item whose single ID expands into every page. The original file is kept and LinkedIn receives it when the pages are posted unchanged)
 
@@ -2552,6 +3188,14 @@ HASHTAG SETS
   hashtag-sets:create            Save a reusable set [--name --tags "#a #b #c"]
   hashtag-sets:update <id>       Rename / replace tags [--name --tags] (--tags replaces the FULL list)
   hashtag-sets:delete <id>       Delete a set (existing posts keep their tags)
+
+AUTOMATIONS (comment to DM on Instagram: needs the opt-in automations:read / automations:write scopes)
+  automations:list               List automations: trigger, post, stats [--status active|paused|completed --post-id <id>]
+  automations:get <id>           Full detail: trigger, post, DM, public reply, limits, stats
+  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --post-id <id> | --instagram-media-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name --paused]
+  automations:update <id>        Change only what you pass; the rest keeps its value [same flags, plus --pause | --resume]
+  automations:delete <id>        Delete an automation (DMs that went out stay)
+  automations:events <id>        Activity: who wrote what, the DM sent or why it was skipped [--outcome sent|skipped|failed|pending --limit <1-100> --offset]
 
 LOCATIONS
   locations:search "<name>"      Find location ids for a place [--platform instagram|threads --latitude --longitude]
@@ -2601,13 +3245,23 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --channels <a,b>               Channel ids (see CHANNELS above)
   --type <post|story|reel>       Content type
   --schedule <ISO8601>           Schedule time (e.g. 2026-07-01T09:00:00Z)
+  --draft                        With --schedule: store a planned draft (on the calendar at that time, not published until a person schedules it, or posts:update --no-draft). On posts:update alone: unschedule a scheduled post, keeping its time
+  --no-draft                     posts:update only: schedule a planned draft at the time it already carries
   --media-urls <url,url>         Attach media by URL
   --media-ids <id,id>            Attach media from the library
+  --media-fit <ch=action,..>     Feed image outside what a channel shows uncropped, per channel: instagram=keep,pinterest=crop (actions auto|crop|keep). Default: Instagram crops a 9:16 image to 4:5 (wide: 1.91:1) around the subject because Instagram cuts it to that window anyway and Meta cannot boost it otherwise; Pinterest keeps a Pin taller than 2:3. Every decision is printed as a [image_fit] warning after the post is created. On posts:update alone it re-decides the stored images (instagram=keep gives the original back). Never on stories, reels or videos
   --link-url <url>               Link preview (LinkedIn/Facebook); --link-title --link-description --link-thumbnail-url
   --hashtag-set <name>           Apply a saved hashtag set by name (see hashtag-sets:list)
   --hashtag-placement <mode>     caption_append (default) or first_comment
   --hashtag-platforms <a,b>      Only apply the set to these channels
   --approval-workflow <id>       Hold the post for review in this approval workflow (see approval-workflows:list); needs --schedule
+  --dm-keywords <a,b>            Comment to DM: whoever comments one of these words on the post gets a DM, once per person (Instagram must be in --channels; needs automations:write on the key). Pair with --dm-message
+  --dm-message "<text>"          Comment to DM: the DM to send (max 1000 chars)
+  --dm-reply "<text>"            Comment to DM: public reply under the comment; repeat the flag (or pass a comma list) for rotating variations, max 10
+  --dm-match <mode>              Comment to DM: word (default, whole word), contains, any (every comment, no keywords)
+  --dm-max-sends <n>             Comment to DM: stop after n DMs
+  --dm-stop-at <ISO8601>         Comment to DM: stop at this time
+  --no-dm                        posts:update only: remove the post's comment-to-DM automation
   --location-id <id>             Instagram place tag (from locations:search)
   --threads-location-id <id>     Threads place tag (from locations:search --platform threads; "null" clears on update)
   --collaborators <a,b>          Instagram co-author usernames (max 3)
@@ -2657,6 +3311,9 @@ PLATFORM FLAGS
   --tiktok-is-aigc               Mark as AI-generated content
   --tiktok-first-comment         Auto first comment on the TikTok video (max 150 chars; needs comments enabled on the channel; video must be public)
   --x-reply-settings             X reply settings (following/mentionedUsers)
+  --x-poll-json '<json>'         Poll on the X post (the text is the question): {"options":["A","B"],"duration_minutes":1440} (2-4 options of up to 25 chars; 5 to 10080 minutes). No media on X with a poll. 'null' on posts:update removes it.
+  --threads-poll-json '<json>'   Poll on the Threads post: {"options":["A","B"]} (2-4 options of 1 to 25 chars; Threads closes it after 24 hours). Text-only post. 'null' on posts:update removes it.
+  --mastodon-poll-json '<json>'  Poll on the Mastodon status: {"options":["A","B"],"expires_in":86400,"multiple":false,"hide_totals":false} (limits from the instance). No media with a poll. 'null' on posts:update removes it.
   --google-business-cta-action   GBP CTA button: LEARN_MORE, BOOK, ORDER, SHOP, SIGN_UP, CALL (GBP captions reject links/phone numbers — the button is the only way)
   --google-business-cta-url      CTA target URL, http(s):// (required for every action except CALL)
   --google-business-topic-type   GBP post type: STANDARD (default), EVENT, OFFER
@@ -2670,9 +3327,14 @@ EXAMPLES
   omnisocials posts:create --text "Spring sale, 20% off until Sunday" --channels google_business --google-business-cta-action LEARN_MORE --google-business-cta-url "https://example.com/sale"
   omnisocials posts:create --text "What should we build next?" --channels linkedin --linkedin-poll-json '{"linkedin":{"question":"What should we build next?","options":["Mobile app","Public API","More integrations"],"duration":"SEVEN_DAYS"}}'
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
+  omnisocials media:check --media-id 12345
+  omnisocials posts:create --text "Golden hour on the pier" --channels instagram --media-ids 12345 --media-fit instagram=keep
   omnisocials locations:search "Blue Bottle Coffee"
   omnisocials pinterest:products
   omnisocials posts:create --text "Autumn outfit" --channels pinterest --media-urls "https://example.com/outfit.jpg" --pinterest-board-id <board_id> --pinterest-product-tags 813744226420795884,813744226420795885
+  omnisocials posts:create --text "Comment GUIDE for the free checklist" --channels instagram --media-urls "https://example.com/photo.jpg" --dm-keywords "guide" --dm-message "Here is the checklist: https://example.com/guide" --dm-reply "Sent you a DM!"
+  omnisocials automations:create --post-id 83778183 --keywords "guide,link" --dm "Here is the guide: https://example.com/guide" --reply "Sent you a DM!" --reply "Check your inbox"
+  omnisocials automations:events 100000004
   omnisocials inbox:list --platform instagram --unread
   omnisocials inbox:next --platform instagram
   omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --message-id <message-id> --next
@@ -2711,6 +3373,12 @@ const COMMANDS = {
   "hashtag-sets:create": { handler: cmdHashtagSetsCreate },
   "hashtag-sets:update": { handler: cmdHashtagSetsUpdate },
   "hashtag-sets:delete": { handler: cmdHashtagSetsDelete },
+  "automations:list": { handler: cmdAutomationsList },
+  "automations:get": { handler: cmdAutomationsGet },
+  "automations:create": { handler: cmdAutomationsCreate },
+  "automations:update": { handler: cmdAutomationsUpdate },
+  "automations:delete": { handler: cmdAutomationsDelete },
+  "automations:events": { handler: cmdAutomationsEvents },
   "locations:search": { handler: cmdLocationsSearch },
   "pinterest:products": { handler: cmdPinterestProducts },
   "pinterest:validate": { handler: cmdPinterestValidate },
