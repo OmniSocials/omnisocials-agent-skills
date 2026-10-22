@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.31.1";
+const VERSION = "1.32.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -26,6 +26,8 @@ const PLATFORMS = [
   "threads",
   "mastodon",
   "google_business",
+  "telegram",
+  "discord",
 ];
 
 // ─── Config Resolution ──────────────────────────────────────────────────────
@@ -135,9 +137,10 @@ async function apiRequest(config, method, apiPath, body, queryParams) {
 // ─── Argument Parser ────────────────────────────────────────────────────────
 
 // Flags that may be given more than once. Their values are collected in an
-// array in the order given (one public-reply variation per --reply). Every
-// other flag keeps its last value when repeated.
-const REPEATABLE_FLAGS = new Set(["reply", "dm-reply"]);
+// array in the order given (one public-reply variation per --reply, one link
+// button per --discord-button). Every other flag keeps its last value when
+// repeated.
+const REPEATABLE_FLAGS = new Set(["reply", "dm-reply", "discord-button"]);
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -234,6 +237,32 @@ function parseMediaFit(value) {
   return out;
 }
 
+// --discord-thread-name "<title>": the post title in a forum or media channel
+// (1-100 chars; required there; on a text channel the post goes out without
+// it). A bare flag is a
+// CLI error; the literal value null on posts:update removes the stored name.
+function parseDiscordThreadName(value) {
+  const name = requireValue("--discord-thread-name", value);
+  return name === "null" ? null : name;
+}
+
+// --discord-button "text|url": one link button, split on the FIRST "|" so the
+// link may hold one too. The API checks the limits (label 1-80 chars, an
+// https:// or http:// link, max 5); the CLI refuses an entry without a "|",
+// a text or a link before the call.
+function parseDiscordButton(value) {
+  const usage =
+    '--discord-button takes "text|url", e.g. --discord-button "Shop now|https://example.com/shop" (repeat the flag for more buttons, max 5)';
+  const raw = value === true ? "" : String(value);
+  const bar = raw.indexOf("|");
+  if (bar === -1) exitWithError(usage);
+  const text = raw.slice(0, bar).trim();
+  const url = raw.slice(bar + 1).trim();
+  if (!text) exitWithError(`--discord-button "${raw}" has no text before the "|". ${usage}`);
+  if (!url) exitWithError(`--discord-button "${raw}" has no link after the "|". ${usage}`);
+  return { text, url };
+}
+
 function assemblePlatformOptions(flags) {
   const platforms = {};
 
@@ -315,15 +344,40 @@ function assemblePlatformOptions(flags) {
     x: {
       "x-reply-settings": "reply_settings",
     },
+    // Telegram (the connected channel or group, posted by the OmniSocials
+    // bot). --telegram-link-preview false hides the preview of a text post.
+    telegram: {
+      "telegram-silent": { key: "silent", transform: (v) => v === true || v === "true" },
+      "telegram-link-preview": { key: "link_preview", transform: (v) => !(v === false || v === "false") },
+      "telegram-pin": { key: "pin", transform: (v) => v === true || v === "true" },
+      "telegram-protect": { key: "protect_content", transform: (v) => v === true || v === "true" },
+      "telegram-spoiler": { key: "spoiler", transform: (v) => v === true || v === "true" },
+      "telegram-caption-above": { key: "caption_above_media", transform: (v) => v === true || v === "true" },
+      // A silent reply under the post in the same chat (max 4096 chars).
+      "telegram-first-comment": "first_comment",
+    },
+    // Discord (one channel, posted through its incoming webhook; posts show
+    // the webhook's name and picture). --discord-no-link-preview hides the
+    // link previews; --discord-allow-mentions lets @everyone, @here, role and
+    // user mentions in the text ping (off: they show as text, nobody pinged).
+    discord: {
+      "discord-silent": { key: "silent", transform: (v) => v === true || v === "true" },
+      "discord-no-link-preview": { key: "link_preview", transform: (v) => !(v === true || v === "true") },
+      "discord-allow-mentions": { key: "allow_mentions", transform: (v) => v === true || v === "true" },
+      "discord-spoiler": { key: "spoiler", transform: (v) => v === true || v === "true" },
+      "discord-thread-name": { key: "thread_name", transform: parseDiscordThreadName },
+    },
   };
 
-  // Polls on X, Threads and Mastodon (one JSON object per channel, nested
-  // under that channel's options as `poll`; the post text is the question).
-  // 'null' on posts:update removes the poll.
+  // Polls on X, Threads, Mastodon, Telegram and Discord (one JSON object per
+  // channel, nested under that channel's options as `poll`; the post text is
+  // the question). 'null' on posts:update removes the poll.
   for (const [platform, flag] of [
     ["x", "x-poll-json"],
     ["threads", "threads-poll-json"],
     ["mastodon", "mastodon-poll-json"],
+    ["telegram", "telegram-poll-json"],
+    ["discord", "discord-poll-json"],
   ]) {
     if (flags[flag] === undefined) continue;
     let parsed;
@@ -336,6 +390,32 @@ function assemblePlatformOptions(flags) {
     }
     if (!platforms[platform]) platforms[platform] = {};
     platforms[platform].poll = parsed;
+  }
+
+  // Telegram link buttons: a JSON array of up to 3 { text, url }. 'null' on
+  // posts:update removes them.
+  if (flags["telegram-buttons-json"] !== undefined) {
+    let parsed;
+    try {
+      parsed = JSON.parse(flags["telegram-buttons-json"]);
+    } catch {
+      exitWithError(
+        '--telegram-buttons-json must be JSON, e.g. \'[{"text":"Shop now","url":"https://example.com"}]\' or \'null\' to remove the buttons'
+      );
+    }
+    if (parsed !== null && !Array.isArray(parsed)) {
+      exitWithError('--telegram-buttons-json must be a JSON array of { "text", "url" } objects, or null');
+    }
+    if (!platforms.telegram) platforms.telegram = {};
+    platforms.telegram.buttons = parsed;
+  }
+
+  // Discord link buttons: one --discord-button "text|url" per button (repeat
+  // the flag; max 5, one row; not with a poll). Remove them on posts:update
+  // with --discord-json '{"buttons":null}'.
+  if (flags["discord-button"] !== undefined) {
+    if (!platforms.discord) platforms.discord = {};
+    platforms.discord.buttons = [].concat(flags["discord-button"]).map(parseDiscordButton);
   }
 
   for (const [platform, fields] of Object.entries(mapping)) {
@@ -358,12 +438,17 @@ function assemblePlatformOptions(flags) {
 
 // An automation answers a keyword in an Instagram comment (or a DM, or a story
 // reply) with a DM, once per person, with an optional public reply under the
-// comment. Instagram allows one private reply per comment within 7 days, and
-// OmniSocials sends at most 180 DMs an hour per account. The scopes are opt-in
-// on the key: without them every call answers 403 insufficient_scope.
+// comment. On a Facebook Page (--platform facebook) it answers a keyword in a
+// comment or a Messenger message, and the DM lands in Messenger; a Page has
+// no story replies. Meta allows one private reply per comment within 7 days,
+// and OmniSocials sends at most 180 DMs an hour per account and platform. The
+// scopes are opt-in on the key: without them every call answers 403
+// insufficient_scope.
 const AUTOMATION_MATCHES = ["word", "contains", "any"];
 const AUTOMATION_SCOPES = ["post", "next_post", "any"];
 const AUTOMATION_KINDS = ["comment", "dm", "story_reply"];
+const AUTOMATION_PLATFORMS = ["instagram", "facebook"];
+const AUTOMATION_PLATFORM_WORDS = { instagram: "Instagram", facebook: "Facebook" };
 const AUTOMATION_STATUSES = ["active", "paused", "completed"];
 const AUTOMATION_EVENT_OUTCOMES = ["sent", "skipped", "failed", "pending"];
 const AUTOMATIONS_SCOPE_HINT =
@@ -436,27 +521,44 @@ function parseStopAt(flag, value) {
 // The body of automations:create (every section, the API's defaults spelled
 // out) and of automations:update (`partial`: only the sections whose flags
 // were given, so the rest stays as stored). Shape:
-//   { name, post_id | instagram_media_id,
+//   { platform, name, post_id | instagram_media_id | facebook_post_id,
 //     trigger: { kinds, scope, keywords, match },
 //     actions: { dm: { text }, public_reply: { enabled, variations } },
 //     limits: { max_sends, stop_at }, status }
-// `scope` only means something for the comment trigger (post = the post
-// named here, next_post = the next Instagram post the workspace publishes,
-// any = every post); on create it is sent when a comment trigger is in.
+// `platform` is instagram (the API's default) or facebook (a Facebook Page);
+// --facebook-post-id implies facebook. `scope` only means something for the
+// comment trigger (post = the post named here, next_post = the next post the
+// workspace publishes on the automation's channel, any = every post); on
+// create it is sent when a comment trigger is in.
 function buildAutomationBody(flags, { partial = false } = {}) {
   const body = {};
 
   if (flags.name !== undefined) body.name = requireValue("--name", flags.name);
+  if (flags.platform !== undefined) body.platform = pickOneOf("--platform", flags.platform, AUTOMATION_PLATFORMS);
 
-  if (flags["post-id"] !== undefined && flags["instagram-media-id"] !== undefined) {
+  const postFlags = ["post-id", "instagram-media-id", "facebook-post-id"].filter((f) => flags[f] !== undefined);
+  if (postFlags.length > 1) {
+    const named = postFlags.map((f) => `--${f}`);
     exitWithError(
-      "Pass --post-id (an OmniSocials post that goes to Instagram) or --instagram-media-id (a post published outside OmniSocials), not both."
+      `Pass ${named.length === 2 ? `${named[0]} or ${named[1]}, not both` : `one of ${named.join(", ")}`}: --post-id is an OmniSocials post, --instagram-media-id an Instagram post and --facebook-post-id a Facebook Page post published outside OmniSocials.`
     );
   }
   if (flags["post-id"] !== undefined) body.post_id = requireValue("--post-id", flags["post-id"]);
   if (flags["instagram-media-id"] !== undefined) {
+    if (body.platform === "facebook") {
+      exitWithError("--instagram-media-id is an Instagram post: for a Facebook Page post use --facebook-post-id.");
+    }
     body.instagram_media_id = requireValue("--instagram-media-id", flags["instagram-media-id"]);
   }
+  if (flags["facebook-post-id"] !== undefined) {
+    if (body.platform === "instagram") {
+      exitWithError("--facebook-post-id is a Facebook Page post: for an Instagram post use --instagram-media-id.");
+    }
+    body.facebook_post_id = requireValue("--facebook-post-id", flags["facebook-post-id"]);
+  }
+  // The channel the flags name; undefined = the API's default (Instagram) or,
+  // on update, the stored one.
+  const platform = body.platform || (body.facebook_post_id !== undefined ? "facebook" : undefined);
 
   const triggerGiven = ["keywords", "match", "scope", "triggers"].some((f) => flags[f] !== undefined);
   if (!partial || triggerGiven) {
@@ -468,6 +570,13 @@ function buildAutomationBody(flags, { partial = false } = {}) {
           ? undefined
           : ["comment"];
     if (kinds) trigger.kinds = kinds;
+    // A Facebook Page has no story replies; the API would answer 400, but the
+    // fix is a flag, so say so before the call.
+    if (platform === "facebook" && kinds && kinds.includes("story_reply")) {
+      exitWithError(
+        "Facebook has no story replies: use --triggers comment,dm with --platform facebook (dm = a keyword in a Messenger message to the Page)."
+      );
+    }
     if (flags.scope !== undefined) trigger.scope = pickOneOf("--scope", flags.scope, AUTOMATION_SCOPES);
     else if (!partial && kinds.includes("comment")) trigger.scope = "post";
     if (flags.keywords !== undefined) trigger.keywords = splitKeywords("--keywords", flags.keywords);
@@ -482,10 +591,11 @@ function buildAutomationBody(flags, { partial = false } = {}) {
       trigger.scope === "post" &&
       trigger.kinds.includes("comment") &&
       body.post_id === undefined &&
-      body.instagram_media_id === undefined
+      body.instagram_media_id === undefined &&
+      body.facebook_post_id === undefined
     ) {
       exitWithError(
-        "A comment automation on a post needs the post: pass --post-id <id> (an OmniSocials post that goes to Instagram) or --instagram-media-id <id> (a post published outside OmniSocials), or pick --scope next_post or --scope any."
+        "A comment automation on a post needs the post: pass --post-id <id> (an OmniSocials post that goes to the channel), --instagram-media-id <id> (an Instagram post published outside OmniSocials) or --facebook-post-id <id> (a Facebook Page post published outside OmniSocials), or pick --scope next_post or --scope any."
       );
     }
   }
@@ -524,13 +634,24 @@ function buildAutomationBody(flags, { partial = false } = {}) {
 }
 
 // --dm-keywords / --dm-message / --dm-reply / --dm-match / --dm-max-sends /
-// --dm-stop-at on posts:create, posts:create-and-publish and posts:update
-// build the post's `comment_dm_automation`: the automation bound to this
-// post (Instagram must be in --channels; it starts listening once the post is
-// live on Instagram). Its shape is the create body without post, scope,
-// kinds, name and status. posts:update --no-dm sends null, which removes it.
+// --dm-stop-at / --dm-platforms on posts:create, posts:create-and-publish and
+// posts:update build the post's `comment_dm_automation`: the automation bound
+// to this post (Instagram or Facebook must be in --channels; it starts
+// listening once the post is live on that channel). Its shape is the create
+// body without post, scope, kinds, name and status, plus `platforms`
+// (--dm-platforms instagram,facebook = one automation per channel; without
+// it the API picks Instagram when the post goes there, else Facebook).
+// posts:update --no-dm sends null, which removes it.
 // Returns undefined when no flag was given, so the key stays out of the body.
-const POST_DM_FLAGS = ["dm-keywords", "dm-message", "dm-reply", "dm-match", "dm-max-sends", "dm-stop-at"];
+const POST_DM_FLAGS = [
+  "dm-keywords",
+  "dm-message",
+  "dm-reply",
+  "dm-match",
+  "dm-max-sends",
+  "dm-stop-at",
+  "dm-platforms",
+];
 function buildPostCommentDm(flags) {
   const given = POST_DM_FLAGS.filter((f) => flags[f] !== undefined);
   if (flags["no-dm"] === true) {
@@ -564,6 +685,9 @@ function buildPostCommentDm(flags) {
       automation.limits.max_sends = parseMaxSends("--dm-max-sends", flags["dm-max-sends"]);
     }
     if (flags["dm-stop-at"] !== undefined) automation.limits.stop_at = parseStopAt("--dm-stop-at", flags["dm-stop-at"]);
+  }
+  if (flags["dm-platforms"] !== undefined) {
+    automation.platforms = pickSomeOf("--dm-platforms", flags["dm-platforms"], AUTOMATION_PLATFORMS);
   }
   return automation;
 }
@@ -764,6 +888,41 @@ function buildPostBody(flags) {
     body[platform] = { ...(body[platform] || {}), ...opts };
   }
 
+  // --telegram-json: the full telegram object, merged last over the
+  // --telegram-* flags. 'null' on posts:update clears the Telegram options.
+  if (flags["telegram-json"] !== undefined) {
+    let parsed;
+    try {
+      parsed = JSON.parse(flags["telegram-json"]);
+    } catch {
+      exitWithError(
+        '--telegram-json must be a JSON object, e.g. \'{"silent":true,"pin":true,"buttons":[{"text":"Shop","url":"https://example.com"}]}\' or \'null\''
+      );
+    }
+    if (parsed === null) body.telegram = null;
+    else if (typeof parsed !== "object" || Array.isArray(parsed)) {
+      exitWithError("--telegram-json must be a JSON object or null");
+    } else body.telegram = { ...(body.telegram || {}), ...parsed };
+  }
+
+  // --discord-json: the full discord object, merged last over the
+  // --discord-* flags. On posts:update every key merges into the stored
+  // options, a key set to null removes it, and 'null' clears them all.
+  if (flags["discord-json"] !== undefined) {
+    let parsed;
+    try {
+      parsed = JSON.parse(flags["discord-json"]);
+    } catch {
+      exitWithError(
+        '--discord-json must be a JSON object, e.g. \'{"silent":true,"buttons":[{"text":"Shop","url":"https://example.com"}]}\' or \'null\''
+      );
+    }
+    if (parsed === null) body.discord = null;
+    else if (typeof parsed !== "object" || Array.isArray(parsed)) {
+      exitWithError("--discord-json must be a JSON object or null");
+    } else body.discord = { ...(body.discord || {}), ...parsed };
+  }
+
   return body;
 }
 
@@ -893,6 +1052,28 @@ function formatPost(post, index) {
   if (productTagsResult && typeof productTagsResult === "object") {
     lines.push(`    Pinterest products: ${formatProductTagsResult(productTagsResult)}`);
   }
+  // Telegram: where the post landed and whether the pin worked.
+  const telegramResult = post.telegram && post.telegram.result;
+  if (telegramResult && typeof telegramResult === "object") {
+    const count = Array.isArray(telegramResult.message_ids) ? telegramResult.message_ids.length : 0;
+    const pin = telegramResult.pinned ? ", pinned" : telegramResult.pin_error ? ` (not pinned: ${telegramResult.pin_error})` : "";
+    lines.push(`    Telegram: ${count} message${count === 1 ? "" : "s"}${pin}`);
+  }
+  // Discord: the message link, the videos or GIFs over 20 MB that went as a
+  // link in the text instead of a file, and the publisher's other warnings.
+  const discordResult = post.discord && post.discord.result;
+  if (discordResult && typeof discordResult === "object") {
+    const url = discordResult.url || (post.published_urls && post.published_urls.discord);
+    const links = Array.isArray(discordResult.video_links) ? discordResult.video_links.length : 0;
+    const warnings = (Array.isArray(discordResult.warnings) ? discordResult.warnings : []).filter(
+      (w) => w !== "media_sent_as_links"
+    );
+    const sent = Boolean(discordResult.message_id || url || discordResult.sent_at);
+    let line = `    Discord: ${sent ? "sent" : "not sent"}${url ? ` · ${url}` : ""}`;
+    if (links) line += `, ${links} video${links === 1 ? "" : "s"} sent as a link`;
+    if (warnings.length) line += ` (warnings: ${warnings.join(", ")})`;
+    lines.push(line);
+  }
   // Retry lineage: retry_of = the failed post this one retries; retries = retry
   // posts created from this one. A "published" post with empty published_urls
   // and retries set is a resolved failure; the live URLs are on the retry post.
@@ -916,6 +1097,24 @@ function formatAccount(account, index) {
     lines.push(
       `    Boards: ${account.boards.map((b) => `${b.name} (${b.id})`).join(", ")}`
     );
+  }
+  // Telegram: the chat type, the subscribers (members of a group) and the link.
+  const details = account.platform === "telegram" ? account.platform_details : null;
+  if (details) {
+    const parts = [details.chat_type, typeof details.subscribers === "number" ? `${details.subscribers} subscribers` : null, details.url]
+      .filter(Boolean);
+    if (parts.length) lines.push(`    Telegram: ${parts.join(", ")}`);
+  }
+  // Discord: the server name (a pasted webhook URL gives none: then the
+  // webhook's name), the channel the OmniSocials bot read or the person gave,
+  // with its type when it is not a text channel, and the channel link.
+  const discordDetails = account.platform === "discord" ? account.platform_details : null;
+  if (discordDetails) {
+    const name = discordDetails.guild_name || (discordDetails.webhook_name ? `webhook ${discordDetails.webhook_name}` : null);
+    const kind = discordDetails.channel_type && discordDetails.channel_type !== "text" ? ` (${discordDetails.channel_type})` : "";
+    const channel = discordDetails.channel_name ? `#${discordDetails.channel_name}${kind}` : null;
+    const parts = [name, channel, discordDetails.url].filter(Boolean);
+    if (parts.length) lines.push(`    Discord: ${parts.join(", ")}`);
   }
   return lines.join("\n");
 }
@@ -951,12 +1150,16 @@ const AUTOMATION_SCOPE_WORDS = {
   any: "every post",
 };
 
-// "comment on this post; keywords: guide, link (whole word)"
-function describeTrigger(trigger) {
+// "comment on this post; keywords: guide, link (whole word)". `platform`
+// names the channel of next_post ("the next Facebook post").
+function describeTrigger(trigger, platform) {
   const t = trigger || {};
   const kinds = (Array.isArray(t.kinds) ? t.kinds : []).map((k) => AUTOMATION_KIND_WORDS[k] || k);
   let line = kinds.length ? kinds.join(", ") : "(no trigger)";
-  if (t.scope && AUTOMATION_SCOPE_WORDS[t.scope]) line += ` on ${AUTOMATION_SCOPE_WORDS[t.scope]}`;
+  if (t.scope && AUTOMATION_SCOPE_WORDS[t.scope]) {
+    const where = t.scope === "next_post" && platform === "facebook" ? "the next Facebook post" : AUTOMATION_SCOPE_WORDS[t.scope];
+    line += ` on ${where}`;
+  }
   if (t.match === "any") return `${line}; no keyword, every one counts`;
   const words = Array.isArray(t.keywords) && t.keywords.length ? t.keywords.join(", ") : "(none)";
   const how = t.match === "contains" ? "anywhere in the text" : "whole word";
@@ -969,7 +1172,8 @@ function describeTrigger(trigger) {
 function describeAutomationPost(a) {
   const p = a.post;
   if (p && typeof p === "object") {
-    const name = p.source === "instagram" ? `Instagram media ${p.id}` : `post ${p.id}`;
+    const name =
+      p.source === "instagram" ? `Instagram media ${p.id}` : p.source === "facebook" ? `Facebook post ${p.id}` : `post ${p.id}`;
     const parts = [];
     if (p.caption) parts.push(`"${truncate(p.caption, 60)}"`);
     if (p.permalink) parts.push(p.permalink);
@@ -977,10 +1181,21 @@ function describeAutomationPost(a) {
     return `${name}${parts.length ? `: ${parts.join("  ")}` : ""}${state ? `  (${state})` : ""}`;
   }
   if (a.post_id) {
-    return `post ${a.post_id}${a.instagram_media_id ? `  (Instagram media ${a.instagram_media_id})` : ""}`;
+    const live = a.instagram_media_id
+      ? `  (Instagram media ${a.instagram_media_id})`
+      : a.facebook_post_id
+        ? `  (Facebook post ${a.facebook_post_id})`
+        : "";
+    return `post ${a.post_id}${live}`;
   }
   if (a.instagram_media_id) return `Instagram media ${a.instagram_media_id}`;
+  if (a.facebook_post_id) return `Facebook post ${a.facebook_post_id}`;
   return "";
+}
+
+// "Instagram" or "Facebook Page": the channel an automation runs on.
+function describeAutomationPlatform(a) {
+  return a.platform === "facebook" ? "Facebook Page" : AUTOMATION_PLATFORM_WORDS[a.platform] || "Instagram";
 }
 
 function describeAutomationStats(stats) {
@@ -993,7 +1208,8 @@ function describeAutomationStats(stats) {
 function formatAutomationRow(a) {
   const lines = [];
   lines.push(`ID: ${a.id}  ${a.status}${a.name ? `  ${a.name}` : ""}`);
-  lines.push(`  Trigger: ${describeTrigger(a.trigger)}`);
+  lines.push(`  Platform: ${describeAutomationPlatform(a)}`);
+  lines.push(`  Trigger: ${describeTrigger(a.trigger, a.platform)}`);
   const post = describeAutomationPost(a);
   if (post) lines.push(`  Post: ${post}`);
   lines.push(`  Stats: ${describeAutomationStats(a.stats)}`);
@@ -1006,7 +1222,8 @@ function formatAutomationDetail(a) {
   lines.push(`ID: ${a.id}`);
   lines.push(`Status: ${a.status}`);
   if (a.name) lines.push(`Name: ${a.name}`);
-  lines.push(`Trigger: ${describeTrigger(a.trigger)}`);
+  lines.push(`Platform: ${describeAutomationPlatform(a)}`);
+  lines.push(`Trigger: ${describeTrigger(a.trigger, a.platform)}`);
   const post = describeAutomationPost(a);
   if (post) lines.push(`Post: ${post}`);
   const actions = a.actions || {};
@@ -1059,7 +1276,13 @@ function printCommentDm(automation) {
       ? "every comment"
       : `keywords: ${Array.isArray(t.keywords) && t.keywords.length ? t.keywords.join(", ") : "(none)"}`;
   const state = automation.status === "active" || !automation.status ? "on" : automation.status;
-  console.log(`Comment-to-DM: ${state} (${keywords}; id ${automation.id})`);
+  // One automation per channel (comment_dm_automation.platforms): name each.
+  const perChannel = Array.isArray(automation.automations) ? automation.automations : [];
+  const ids =
+    perChannel.length > 0
+      ? perChannel.map((x) => `${AUTOMATION_PLATFORM_WORDS[x.platform] || x.platform} id ${x.id}`).join(", ")
+      : `id ${automation.id}`;
+  console.log(`Comment-to-DM: ${state} (${keywords}; ${ids})`);
 }
 
 // --- Social Inbox ---
@@ -2063,6 +2286,7 @@ async function cmdHashtagSetsDelete(config, flags, positional) {
 async function cmdAutomationsList(config, flags) {
   const query = {};
   if (flags.status !== undefined) query.status = pickOneOf("--status", flags.status, AUTOMATION_STATUSES);
+  if (flags.platform !== undefined) query.platform = pickOneOf("--platform", flags.platform, AUTOMATION_PLATFORMS);
   if (flags["post-id"] !== undefined) query.post_id = requireValue("--post-id", flags["post-id"]);
 
   const result = await apiRequest(config, "GET", "/automations", undefined, query);
@@ -2094,7 +2318,7 @@ async function cmdAutomationsGet(config, flags, positional) {
 async function cmdAutomationsCreate(config, flags) {
   if (flags.dm === undefined) {
     exitWithError(
-      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --paused]'
+      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--platform instagram|facebook --instagram-media-id <id> | --facebook-post-id <id> --reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --paused]'
     );
   }
 
@@ -2105,8 +2329,8 @@ async function cmdAutomationsCreate(config, flags) {
     console.log(formatAutomationDetail(d));
     if (d.status === "paused") {
       console.log(`Turn it on with: automations:update ${d.id} --resume`);
-    } else if (d.post_id && !d.instagram_media_id) {
-      console.log("It starts listening once the post is live on Instagram.");
+    } else if (d.post_id && !d.instagram_media_id && !d.facebook_post_id) {
+      console.log(`It starts listening once the post is live on ${d.platform === "facebook" ? "Facebook" : "Instagram"}.`);
     }
     console.log(`Activity: automations:events ${d.id}`);
   });
@@ -2116,7 +2340,7 @@ async function cmdAutomationsUpdate(config, flags, positional) {
   const id = flags.id || positional[0];
   if (!id) {
     exitWithError(
-      'Usage: omnisocials automations:update <id> [--keywords "guide,link" --match word|contains|any --dm "<text>" --reply "<text>" --post-id <id> | --instagram-media-id <id> --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --pause | --resume]'
+      'Usage: omnisocials automations:update <id> [--keywords "guide,link" --match word|contains|any --dm "<text>" --reply "<text>" --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --pause | --resume]'
     );
   }
 
@@ -2563,6 +2787,12 @@ function getEngagement(platform, metrics) {
       return sum("likes", "comments", "reposts", "quotes");
     case "mastodon":
       return sum("likes", "comments", "reposts");
+    case "telegram":
+      // Reactions are the only post number a bot gets, stored as `likes`.
+      return sum("likes");
+    case "discord":
+      // Discord gives no views; `likes` = all reactions on the message.
+      return sum("likes");
     case "instagram":
       return sum("likes", "comments", "saves", "shares");
     case "pinterest":
@@ -3143,11 +3373,12 @@ async function cmdWebhooksRotateSecret(config, flags, positional) {
 function showHelp() {
   console.log(`OmniSocials CLI v${VERSION}
 
-Manage social media across 11 platforms from the command line.
+Manage social media across 13 platforms from the command line.
 
 CHANNELS
   instagram, facebook, linkedin (profile), linkedin_page (company page),
-  youtube, tiktok, x, pinterest, bluesky, threads, mastodon, google_business
+  youtube, tiktok, x, pinterest, bluesky, threads, mastodon, google_business,
+  telegram (a channel or group), discord (a channel, posted through its webhook)
 
 SETUP
   setup                          Configure your API key
@@ -3189,10 +3420,10 @@ HASHTAG SETS
   hashtag-sets:update <id>       Rename / replace tags [--name --tags] (--tags replaces the FULL list)
   hashtag-sets:delete <id>       Delete a set (existing posts keep their tags)
 
-AUTOMATIONS (comment to DM on Instagram: needs the opt-in automations:read / automations:write scopes)
-  automations:list               List automations: trigger, post, stats [--status active|paused|completed --post-id <id>]
+AUTOMATIONS (comment to DM on Instagram or a Facebook Page: needs the opt-in automations:read / automations:write scopes)
+  automations:list               List automations: trigger, post, stats [--status active|paused|completed --platform instagram|facebook --post-id <id>]
   automations:get <id>           Full detail: trigger, post, DM, public reply, limits, stats
-  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --post-id <id> | --instagram-media-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name --paused]
+  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --platform instagram|facebook (default instagram; on Facebook the DM lands in Messenger) --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply (Facebook: comment,dm) --max-sends <n> --stop-at <ISO8601> --name --paused]
   automations:update <id>        Change only what you pass; the rest keeps its value [same flags, plus --pause | --resume]
   automations:delete <id>        Delete an automation (DMs that went out stay)
   automations:events <id>        Activity: who wrote what, the DM sent or why it was skipped [--outcome sent|skipped|failed|pending --limit <1-100> --offset]
@@ -3255,12 +3486,13 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --hashtag-placement <mode>     caption_append (default) or first_comment
   --hashtag-platforms <a,b>      Only apply the set to these channels
   --approval-workflow <id>       Hold the post for review in this approval workflow (see approval-workflows:list); needs --schedule
-  --dm-keywords <a,b>            Comment to DM: whoever comments one of these words on the post gets a DM, once per person (Instagram must be in --channels; needs automations:write on the key). Pair with --dm-message
+  --dm-keywords <a,b>            Comment to DM: whoever comments one of these words on the post gets a DM, once per person (Instagram or Facebook must be in --channels; needs automations:write on the key). Pair with --dm-message
   --dm-message "<text>"          Comment to DM: the DM to send (max 1000 chars)
   --dm-reply "<text>"            Comment to DM: public reply under the comment; repeat the flag (or pass a comma list) for rotating variations, max 10
   --dm-match <mode>              Comment to DM: word (default, whole word), contains, any (every comment, no keywords)
   --dm-max-sends <n>             Comment to DM: stop after n DMs
   --dm-stop-at <ISO8601>         Comment to DM: stop at this time
+  --dm-platforms <a,b>           Comment to DM: the channels that get it, instagram,facebook (one automation each; default Instagram when the post goes there, else Facebook)
   --no-dm                        posts:update only: remove the post's comment-to-DM automation
   --location-id <id>             Instagram place tag (from locations:search)
   --threads-location-id <id>     Threads place tag (from locations:search --platform threads; "null" clears on update)
@@ -3314,6 +3546,24 @@ PLATFORM FLAGS
   --x-poll-json '<json>'         Poll on the X post (the text is the question): {"options":["A","B"],"duration_minutes":1440} (2-4 options of up to 25 chars; 5 to 10080 minutes). No media on X with a poll. 'null' on posts:update removes it.
   --threads-poll-json '<json>'   Poll on the Threads post: {"options":["A","B"]} (2-4 options of 1 to 25 chars; Threads closes it after 24 hours). Text-only post. 'null' on posts:update removes it.
   --mastodon-poll-json '<json>'  Poll on the Mastodon status: {"options":["A","B"],"expires_in":86400,"multiple":false,"hide_totals":false} (limits from the instance). No media with a poll. 'null' on posts:update removes it.
+  --telegram-silent              Telegram: send without a notification sound
+  --telegram-link-preview false  Telegram: hide the link preview of a text-only post (shown by default)
+  --telegram-pin                 Telegram: pin the post in the chat (needs the bot's Edit messages right in a channel, Pin messages in a group)
+  --telegram-protect             Telegram: stop forwarding and saving of the post
+  --telegram-spoiler             Telegram: blur the photos and videos until tapped
+  --telegram-caption-above       Telegram: show the text above the media
+  --telegram-buttons-json '<json>'  Telegram link buttons: [{"text":"Shop now","url":"https://..."}] (max 3, one per row; not on an album or a poll). 'null' on posts:update removes them.
+  --telegram-poll-json '<json>'  Native Telegram poll (the text is the question, max 300 chars): {"options":["A","B"],"open_period":86400,"multiple":false} (2-12 options of up to 100 chars; 5 to 2628000 seconds, omit to keep it open). No media with a poll. 'null' on posts:update removes it.
+  --telegram-first-comment       Telegram: a silent reply under the post (max 4096 chars)
+  --telegram-json '<json>'       The full telegram object, merged over the --telegram-* flags
+  --discord-silent               Discord: send without a push or desktop notification (@silent)
+  --discord-no-link-preview      Discord: hide the link previews
+  --discord-allow-mentions       Discord: let @everyone, @here, role and user mentions in the text ping (off: they show as text and ping nobody)
+  --discord-spoiler              Discord: blur every image and video
+  --discord-thread-name "<title>"  Discord: the post title in a forum or media channel (1-100 chars; required there; on a text channel the post goes out without it). 'null' on posts:update removes it.
+  --discord-button "text|url"    Discord link button; repeat for more (max 5 in one row; label 1-80 chars, https:// or http:// link; not with a poll)
+  --discord-poll-json '<json>'   Native Discord poll (the text is the question, max 300 chars): {"options":["A","B"],"duration_hours":24,"multiple":false} (2-10 options of up to 55 chars; 1 to 768 hours, default 24). No media and no buttons with a poll. 'null' on posts:update removes it.
+  --discord-json '<json>'        The full discord object, merged over the --discord-* flags
   --google-business-cta-action   GBP CTA button: LEARN_MORE, BOOK, ORDER, SHOP, SIGN_UP, CALL (GBP captions reject links/phone numbers — the button is the only way)
   --google-business-cta-url      CTA target URL, http(s):// (required for every action except CALL)
   --google-business-topic-type   GBP post type: STANDARD (default), EVENT, OFFER
@@ -3327,6 +3577,10 @@ EXAMPLES
   omnisocials posts:create --text "Spring sale, 20% off until Sunday" --channels google_business --google-business-cta-action LEARN_MORE --google-business-cta-url "https://example.com/sale"
   omnisocials posts:create --text "What should we build next?" --channels linkedin --linkedin-poll-json '{"linkedin":{"question":"What should we build next?","options":["Mobile app","Public API","More integrations"],"duration":"SEVEN_DAYS"}}'
   omnisocials posts:create --text "New reel!" --channels instagram --type reel --media-urls "https://example.com/reel.mp4" --instagram-first-comment "#reels #marketing\nlink: https://example.com"
+  omnisocials posts:create --text "The new collection is live." --channels telegram --media-urls "https://example.com/collection.jpg" --telegram-silent --telegram-pin --telegram-buttons-json '[{"text":"Shop now","url":"https://example.com/shop"}]'
+  omnisocials posts:create --text "Which day suits the live Q&A?" --channels telegram --telegram-poll-json '{"options":["Tuesday","Thursday","Saturday"],"open_period":86400}'
+  omnisocials posts:create --text "The spring drop is live." --channels discord --media-urls "https://example.com/drop.jpg" --discord-silent --discord-button "Shop now|https://example.com/shop"
+  omnisocials posts:create --text "Which day suits the community call?" --channels discord --discord-poll-json '{"options":["Tuesday","Thursday","Saturday"],"duration_hours":48}'
   omnisocials media:check --media-id 12345
   omnisocials posts:create --text "Golden hour on the pier" --channels instagram --media-ids 12345 --media-fit instagram=keep
   omnisocials locations:search "Blue Bottle Coffee"
@@ -3334,6 +3588,7 @@ EXAMPLES
   omnisocials posts:create --text "Autumn outfit" --channels pinterest --media-urls "https://example.com/outfit.jpg" --pinterest-board-id <board_id> --pinterest-product-tags 813744226420795884,813744226420795885
   omnisocials posts:create --text "Comment GUIDE for the free checklist" --channels instagram --media-urls "https://example.com/photo.jpg" --dm-keywords "guide" --dm-message "Here is the checklist: https://example.com/guide" --dm-reply "Sent you a DM!"
   omnisocials automations:create --post-id 83778183 --keywords "guide,link" --dm "Here is the guide: https://example.com/guide" --reply "Sent you a DM!" --reply "Check your inbox"
+  omnisocials automations:create --platform facebook --facebook-post-id 104857600_123456789 --keywords "guide" --dm "Here is the guide: https://example.com/guide"
   omnisocials automations:events 100000004
   omnisocials inbox:list --platform instagram --unread
   omnisocials inbox:next --platform instagram

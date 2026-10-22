@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This is the OmniSocials agent-skills package. It provides a CLI tool and SKILL.md for AI agents to manage social media across 11 platforms (12 channels) via the OmniSocials API.
+This is the OmniSocials agent-skills package. It provides a CLI tool and SKILL.md for AI agents to manage social media across 13 platforms (14 channels) via the OmniSocials API.
 
 ## Structure
 

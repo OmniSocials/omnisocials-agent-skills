@@ -1,12 +1,12 @@
 # OmniSocials Agent Skills
 
-AI agent skills for managing social media across 11 platforms (12 channels) via [OmniSocials](https://omnisocials.com). Give your AI agent the ability to create, schedule, and publish posts directly from your IDE or terminal.
+AI agent skills for managing social media across 13 platforms (14 channels) via [OmniSocials](https://omnisocials.com). Give your AI agent the ability to create, schedule, and publish posts directly from your IDE or terminal.
 
 Works with Claude Code, Cursor, Windsurf, GitHub Copilot, Codex, Gemini CLI, and many others.
 
 ## Supported Platforms
 
-Instagram, Facebook, LinkedIn (personal profile + company page), YouTube, TikTok, X (Twitter), Pinterest, Bluesky, Threads, Mastodon, Google Business
+Instagram, Facebook, LinkedIn (personal profile + company page), YouTube, TikTok, X (Twitter), Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram (channels and groups), Discord (channels)
 
 ## Setup
 
@@ -63,7 +63,7 @@ Ask your AI agent things like:
 
 ## Features
 
-- **11 platforms (12 channels)** from one tool
+- **13 platforms (14 channels)** from one tool
 - **Posts, Stories, and Reels** with platform-specific options
 - **Platform-specific controls**: Pinterest boards and product tags, YouTube metadata, TikTok privacy, Instagram covers, X reply settings
 - **Per-platform media**: Different images/videos for different platforms in the same post
@@ -78,20 +78,23 @@ Ask your AI agent things like:
 
 ## Alternative: MCP Server
 
-For deeper integration with Claude Code and Claude Desktop, you can also use the OmniSocials MCP Server:
+For agents that call tools instead of shell commands, add the hosted OmniSocials MCP server. It signs in with OAuth (no API key) and has every tool. In Claude Code:
 
 ```bash
-claude mcp add omnisocials -- npx -y @omnisocials/mcp-server
+claude mcp add --transport http --scope user omnisocials https://mcp.omnisocials.com
+claude mcp login omnisocials
 ```
 
-See [@omnisocials/mcp-server on npm](https://www.npmjs.com/package/@omnisocials/mcp-server) for details.
+Setup for other agents: [omnisocials.com/mcp](https://omnisocials.com/mcp). The [@omnisocials/mcp-server](https://www.npmjs.com/package/@omnisocials/mcp-server) npm package runs a local copy with an API key, with fewer tools than the hosted server.
 
-## Grok Build / Grok Bot
+## Claude Code and Grok Build plugin
 
-This repo is also an installable plugin for Grok Build. It bundles the skill plus the hosted OmniSocials MCP server.
+This repo is also an installable plugin marketplace for Claude Code and Grok Build. The plugin bundles the skill plus the hosted OmniSocials MCP server.
 
-1. In Grok Build, run `/plugin` and search for **omnisocials**. Or install directly from this repo URL.
-2. On first use, an authorize card appears. Sign in to OmniSocials and approve the workspaces Grok can access.
+- **Claude Code:** `/plugin marketplace add OmniSocials/omnisocials-agent-skills`, then `/plugin install omnisocials@omnisocials-skills`.
+- **Grok Build:** `grok plugin install OmniSocials/omnisocials-agent-skills --trust`, or `grok plugin marketplace add OmniSocials/omnisocials-agent-skills` and install it from `/plugins`. It is not in xAI's official marketplace.
+
+On first use, sign in to OmniSocials and approve the workspaces the agent can access.
 
 The MCP connection uses OAuth. No API key is needed for it.
 

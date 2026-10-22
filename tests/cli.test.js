@@ -224,6 +224,384 @@ describe("CLI basics", () => {
     );
   });
 
+  it("posts:create sends the --telegram-* flags as the telegram object", async () => {
+    await withMockServer(
+      () => ({
+        status: 201,
+        json: {
+          data: {
+            id: "p1",
+            status: "published",
+            telegram: { result: { message_ids: ["41", "42"], pinned: false, pin_error: "no_right" } },
+          },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "The new collection is live.",
+          "--channels",
+          "telegram",
+          "--telegram-silent",
+          "--telegram-pin",
+          "--telegram-link-preview",
+          "false",
+          "--telegram-buttons-json",
+          '[{"text":"Shop now","url":"https://example.com/shop"}]',
+          "--telegram-poll-json",
+          '{"options":["Tuesday","Thursday"],"open_period":86400}',
+          "--telegram-first-comment",
+          "Questions? Reply here.",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.channels).toEqual(["telegram"]);
+        expect(calls[0].body.telegram).toEqual({
+          silent: true,
+          pin: true,
+          link_preview: false,
+          buttons: [{ text: "Shop now", url: "https://example.com/shop" }],
+          poll: { options: ["Tuesday", "Thursday"], open_period: 86400 },
+          first_comment: "Questions? Reply here.",
+        });
+        expect(stdout).toContain("ID: p1");
+      }
+    );
+  });
+
+  it("posts:list prints where a Telegram post landed", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            {
+              id: "p1",
+              status: "published",
+              content: { default: "The new collection is live." },
+              accounts: ["telegram"],
+              telegram: { result: { message_ids: ["41", "42"], pinned: false, pin_error: "no_right" } },
+              created_at: "2026-10-17T09:00:00Z",
+            },
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["posts:list", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Telegram: 2 messages (not pinned: no_right)");
+      }
+    );
+  });
+
+  it("posts:update --telegram-json merges over the flags and null clears a key", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:update",
+          "p1",
+          "--telegram-pin",
+          "--telegram-json",
+          '{"pin":false,"poll":null}',
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].body.telegram).toEqual({ pin: false, poll: null });
+      }
+    );
+  });
+
+  it("posts:create rejects --telegram-buttons-json that is not an array", async () => {
+    const { stderr, exitCode } = await run([
+      "posts:create",
+      "--text",
+      "Hi",
+      "--channels",
+      "telegram",
+      "--telegram-buttons-json",
+      '{"text":"Shop","url":"https://example.com"}',
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("--telegram-buttons-json must be a JSON array");
+  });
+
+  it("help lists the telegram channel and flags", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("telegram (a channel or group)");
+    expect(stdout).toContain("--telegram-poll-json");
+    expect(stdout).toContain("--telegram-buttons-json");
+  });
+
+  it("posts:create sends the --discord-* flags as the discord object", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "scheduled" } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "The spring drop is live.",
+          "--channels",
+          "discord",
+          "--discord-silent",
+          "--discord-no-link-preview",
+          "--discord-allow-mentions",
+          "--discord-spoiler",
+          "--discord-thread-name",
+          "Spring drop",
+          "--discord-button",
+          "Shop now|https://example.com/shop?a=1|b",
+          "--discord-button",
+          "Lookbook | https://example.com/lookbook",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create");
+        expect(calls[0].body.channels).toEqual(["discord"]);
+        // Split on the FIRST "|": the second button's link keeps its own "|".
+        expect(calls[0].body.discord).toEqual({
+          silent: true,
+          link_preview: false,
+          allow_mentions: true,
+          spoiler: true,
+          thread_name: "Spring drop",
+          buttons: [
+            { text: "Shop now", url: "https://example.com/shop?a=1|b" },
+            { text: "Lookbook", url: "https://example.com/lookbook" },
+          ],
+        });
+        expect(stdout).toContain("ID: p1");
+      }
+    );
+  });
+
+  it("posts:create-and-publish sends --discord-poll-json as discord.poll, and false values as false", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p2", status: "posting" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:create-and-publish",
+          "--text",
+          "Which day suits the community call?",
+          "--channels",
+          "discord",
+          "--discord-poll-json",
+          '{"options":["Tuesday","Thursday"],"duration_hours":48,"multiple":true}',
+          "--discord-silent",
+          "false",
+          "--discord-no-link-preview",
+          "false",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/create-and-publish");
+        expect(calls[0].body.discord).toEqual({
+          poll: { options: ["Tuesday", "Thursday"], duration_hours: 48, multiple: true },
+          silent: false,
+          link_preview: true,
+        });
+      }
+    );
+  });
+
+  it("posts:list prints the Discord message link and the videos sent as a link", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            {
+              id: "p1",
+              status: "published",
+              content: { default: "The spring drop is live." },
+              accounts: ["discord"],
+              published_urls: { discord: "https://discord.com/channels/11/22/33" },
+              discord: {
+                silent: true,
+                result: {
+                  webhook_id: "44",
+                  guild_id: "11",
+                  channel_id: "22",
+                  thread_id: null,
+                  message_id: "33",
+                  url: "https://discord.com/channels/11/22/33",
+                  sent_at: "2026-10-22T09:00:00Z",
+                  video_links: ["https://cdn.example.com/big.mp4"],
+                  warnings: ["media_sent_as_links"],
+                },
+              },
+              created_at: "2026-10-22T08:00:00Z",
+            },
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["posts:list", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Discord: sent · https://discord.com/channels/11/22/33, 1 video sent as a link");
+        expect(stdout).not.toContain("warnings:");
+      }
+    );
+  });
+
+  it("posts:update --discord-json merges over the flags, and 'null' removes the poll or every option", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const base = ["posts:update", "p1", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const merged = await run([...base, "--discord-silent", "--discord-json", '{"silent":false,"buttons":null}']);
+        expect(merged.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].body.discord).toEqual({ silent: false, buttons: null });
+
+        const noPoll = await run([...base, "--discord-poll-json", "null", "--discord-thread-name", "null"]);
+        expect(noPoll.exitCode).toBe(0);
+        expect(calls[1].body.discord).toEqual({ poll: null, thread_name: null });
+
+        const cleared = await run([...base, "--discord-json", "null"]);
+        expect(cleared.exitCode).toBe(0);
+        expect(calls[2].body.discord).toBeNull();
+      }
+    );
+  });
+
+  it("posts:create refuses a bad --discord-button, --discord-poll-json, --discord-json or a bare --discord-thread-name before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const base = ["posts:create", "--text", "Hi", "--channels", "discord", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const noBar = await run([...base, "--discord-button", "Shop now https://example.com"]);
+        expect(noBar.exitCode).not.toBe(0);
+        expect(noBar.stderr).toContain('--discord-button takes "text|url"');
+
+        const noText = await run([...base, "--discord-button", " |https://example.com"]);
+        expect(noText.exitCode).not.toBe(0);
+        expect(noText.stderr).toContain('has no text before the "|"');
+
+        const noUrl = await run([...base, "--discord-button", "Shop now|"]);
+        expect(noUrl.exitCode).not.toBe(0);
+        expect(noUrl.stderr).toContain('has no link after the "|"');
+
+        // One bad entry among good ones still stops the call.
+        const oneBad = await run([...base, "--discord-button", "Shop|https://example.com", "--discord-button", "Lookbook"]);
+        expect(oneBad.exitCode).not.toBe(0);
+        expect(oneBad.stderr).toContain('--discord-button takes "text|url"');
+
+        const badPoll = await run([...base, "--discord-poll-json", "{options:[A,B]}"]);
+        expect(badPoll.exitCode).not.toBe(0);
+        expect(badPoll.stderr).toContain("--discord-poll-json must be JSON");
+
+        const badJson = await run([...base, "--discord-json", "{silent:true}"]);
+        expect(badJson.exitCode).not.toBe(0);
+        expect(badJson.stderr).toContain("--discord-json must be a JSON object");
+
+        const arrayJson = await run([...base, "--discord-json", "[]"]);
+        expect(arrayJson.exitCode).not.toBe(0);
+        expect(arrayJson.stderr).toContain("--discord-json must be a JSON object or null");
+
+        const bareName = await run([...base, "--discord-thread-name"]);
+        expect(bareName.exitCode).not.toBe(0);
+        expect(bareName.stderr).toContain("--discord-thread-name needs a value");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("accounts:list prints the Discord server (or the webhook name) and the channel link", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            {
+              id: "1_discord",
+              platform: "discord",
+              username: "OmniSocials",
+              status: "active",
+              platform_details: {
+                guild_id: "11",
+                guild_name: "Brand Community",
+                channel_id: "22",
+                webhook_name: "OmniSocials",
+                connect_method: "oauth",
+                url: "https://discord.com/channels/11/22",
+              },
+            },
+            {
+              id: "2_discord",
+              platform: "discord",
+              username: "Announcements",
+              status: "active",
+              platform_details: {
+                guild_id: "12",
+                guild_name: null,
+                channel_id: "23",
+                webhook_name: "Announcements",
+                connect_method: "url",
+                url: "https://discord.com/channels/12/23",
+              },
+            },
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["accounts:list", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Discord: Brand Community, https://discord.com/channels/11/22");
+        expect(stdout).toContain("Discord: webhook Announcements, https://discord.com/channels/12/23");
+      }
+    );
+  });
+
+  it("analytics:post counts all Discord reactions as the engagement", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: {
+            post_id: "p1",
+            platforms: { discord: { metrics: { likes: 7, reactions: { "🔥": 5, "👍": 2 } } } },
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["analytics:post", "p1", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Engagements: 7");
+        expect(stdout).toContain("discord: 7 likes");
+      }
+    );
+  });
+
+  it("help lists the discord channel and flags", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("OmniSocials CLI v1.32.0");
+    expect(stdout).toContain("discord (a channel, posted through its webhook)");
+    expect(stdout).toContain("--discord-button");
+    expect(stdout).toContain("--discord-poll-json");
+    expect(stdout).toContain("--discord-json");
+  });
+
   it("posts:create rejects a --video-cover-json that is not JSON", async () => {
     const { stderr, exitCode } = await run([
       "posts:create",
@@ -2683,6 +3061,176 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(exitCode).not.toBe(0);
         expect(stderr).toContain("Error [insufficient_scope]");
         expect(stderr).toContain("Enable Automations on the API key");
+      }
+    );
+  });
+
+  it("automations:create --platform facebook sends platform and facebook_post_id and prints the Facebook post", async () => {
+    const facebook = {
+      ...AUTOMATION,
+      id: "100000007",
+      platform: "facebook",
+      name: null,
+      post_id: null,
+      instagram_media_id: null,
+      facebook_post_id: "104857600_123456789",
+      post: {
+        source: "facebook",
+        id: "104857600_123456789",
+        caption: "Comment GUIDE for the checklist",
+        thumbnail_url: null,
+        permalink: "https://www.facebook.com/104857600/posts/123456789",
+        media_type: null,
+      },
+      trigger: { kinds: ["comment", "dm"], scope: "post", keywords: ["guide"], match: "word" },
+    };
+    await withMockServer(
+      () => ({ status: 201, json: { data: facebook } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:create",
+          "--platform",
+          "facebook",
+          "--facebook-post-id",
+          "104857600_123456789",
+          "--triggers",
+          "comment,dm",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here is the guide",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({
+          platform: "facebook",
+          facebook_post_id: "104857600_123456789",
+          trigger: { kinds: ["comment", "dm"], scope: "post", keywords: ["guide"], match: "word" },
+          actions: { dm: { text: "Here is the guide" } },
+        });
+        expect(stdout).toContain("Platform: Facebook Page");
+        expect(stdout).toContain('Post: Facebook post 104857600_123456789: "Comment GUIDE for the checklist"');
+        expect(stdout).not.toContain("live on Instagram");
+      }
+    );
+  });
+
+  it("automations:create refuses story replies on Facebook, a wrong post flag for the platform, two post flags and an unknown --platform, before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const base = ["automations:create", "--dm", "x", "--keywords", "guide", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const story = await run([...base, "--platform", "facebook", "--facebook-post-id", "1_2", "--triggers", "comment,story_reply"]);
+        expect(story.exitCode).not.toBe(0);
+        expect(story.stderr).toContain("Facebook has no story replies");
+
+        // --facebook-post-id implies facebook, so the same check applies.
+        const implied = await run([...base, "--facebook-post-id", "1_2", "--triggers", "story_reply"]);
+        expect(implied.exitCode).not.toBe(0);
+        expect(implied.stderr).toContain("Facebook has no story replies");
+
+        const igOnFacebook = await run([...base, "--platform", "facebook", "--instagram-media-id", "18134683699582250"]);
+        expect(igOnFacebook.exitCode).not.toBe(0);
+        expect(igOnFacebook.stderr).toContain("for a Facebook Page post use --facebook-post-id");
+
+        const fbOnInstagram = await run([...base, "--platform", "instagram", "--facebook-post-id", "1_2"]);
+        expect(fbOnInstagram.exitCode).not.toBe(0);
+        expect(fbOnInstagram.stderr).toContain("for an Instagram post use --instagram-media-id");
+
+        const both = await run([...base, "--post-id", "1", "--facebook-post-id", "1_2"]);
+        expect(both.exitCode).not.toBe(0);
+        expect(both.stderr).toContain("Pass --post-id or --facebook-post-id, not both");
+
+        const badPlatform = await run([...base, "--platform", "tiktok", "--post-id", "1"]);
+        expect(badPlatform.exitCode).not.toBe(0);
+        expect(badPlatform.stderr).toContain("--platform must be one of instagram|facebook");
+
+        const noPost = await run([...base, "--platform", "facebook"]);
+        expect(noPost.exitCode).not.toBe(0);
+        expect(noPost.stderr).toContain("--facebook-post-id <id>");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("automations:list passes --platform and names the next Facebook post", async () => {
+    const nextFacebook = {
+      ...AUTOMATION,
+      platform: "facebook",
+      post: null,
+      post_id: null,
+      instagram_media_id: null,
+      facebook_post_id: null,
+      trigger: { kinds: ["comment"], scope: "next_post", keywords: ["guide"], match: "word" },
+    };
+    await withMockServer(
+      () => ({ json: { data: [nextFacebook] } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["automations:list", "--platform", "facebook", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].query.get("platform")).toBe("facebook");
+        expect(stdout).toContain("  Platform: Facebook Page");
+        expect(stdout).toContain("  Trigger: comment on the next Facebook post; keywords: guide (whole word)");
+
+        const bad = await run(["automations:list", "--platform", "x", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("--platform must be one of instagram|facebook");
+        expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it("posts:create --dm-platforms sends comment_dm_automation.platforms and prints one id per channel", async () => {
+    const bound = {
+      ...AUTOMATION,
+      id: "100000006",
+      post: null,
+      platforms: ["instagram", "facebook"],
+      automations: [
+        { id: "100000006", platform: "instagram", status: "active" },
+        { id: "100000007", platform: "facebook", status: "active" },
+      ],
+    };
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "scheduled", comment_dm_automation: bound } } }),
+      async (baseUrl, calls) => {
+        const base = [
+          "posts:create",
+          "--text",
+          "Comment GUIDE",
+          "--channels",
+          "instagram,facebook",
+          "--dm-keywords",
+          "guide",
+          "--dm-message",
+          "Here you go",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ];
+        const { stdout, exitCode } = await run([...base, "--dm-platforms", "instagram,facebook"]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.comment_dm_automation).toEqual({
+          trigger: { keywords: ["guide"], match: "word" },
+          actions: { dm: { text: "Here you go" } },
+          platforms: ["instagram", "facebook"],
+        });
+        expect(stdout).toContain("Comment-to-DM: on (keywords: guide, link; Instagram id 100000006, Facebook id 100000007)");
+
+        const bad = await run([...base, "--dm-platforms", "instagram,threads"]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain('--dm-platforms: "threads" is not one of instagram|facebook');
+
+        const mixed = await run(["posts:update", "p1", "--no-dm", "--dm-platforms", "facebook", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(mixed.exitCode).not.toBe(0);
+        expect(mixed.stderr).toContain("cannot go with --dm-platforms");
+        expect(calls).toHaveLength(1);
       }
     );
   });
