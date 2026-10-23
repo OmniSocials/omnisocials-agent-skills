@@ -295,8 +295,8 @@ All commands support these flags:
 | Threads | Yes (single post or a 2-25 part thread via `--threads-thread`; location tag via `--threads-location-id`; inbox replies/mentions via `inbox:*`; location tag still rolling out) | No | No | Optional |
 | Mastodon | Yes | No | No | Optional |
 | Google Business | Yes | No | No | Optional |
-| Telegram (`telegram`, a channel or group) | Yes (text, photos, videos, GIFs, files, albums of 2-10, native polls) | No | Yes (sent as a video message) | Optional |
-| Discord (`discord`, one channel, posted through its webhook) | Yes (text, up to 10 images, GIFs and videos in one message, native polls, link buttons) | No | Yes (one video message) | Optional |
+| Telegram (`telegram`, a channel or group) | Yes (text, photos, videos, GIFs, files, albums of 2-10, native polls) | No | No (Telegram has no reels; a reel that names `telegram` is still accepted and Telegram gets the video as a normal post) | Optional |
+| Discord (`discord`, one channel, posted through its webhook) | Yes (text, up to 10 images, GIFs and videos in one message, native polls, link buttons) | No | No (Discord has no reels; a reel that names `discord` is still accepted and Discord gets the video as a normal message) | Optional |
 
 ### Platform-Specific Flags
 
@@ -474,7 +474,7 @@ The workspace connects one Telegram channel or group in the OmniSocials dashboar
 A published post's `posts:get --json` carries `telegram.result` (`message_ids`, `pinned`, `pin_error`, `link_public` / `link_private`). Removing a post from Telegram works only in the first 48 hours (a Telegram rule), from the post in the OmniSocials dashboard; `posts:delete` removes it from OmniSocials only.
 
 #### Discord
-The workspace connects one Discord channel in the OmniSocials dashboard (Continue with Discord, or a pasted webhook URL); OmniSocials posts through that channel's incoming webhook, so a post shows the webhook's name and picture as the sender (change them in Discord, Server Settings > Integrations > Webhooks). `accounts:list` prints the server name (a pasted webhook URL gives none: then the webhook's name) and the channel link. Text up to 2,000 chars. Up to 10 images, GIFs and videos in one message, mixed; a video or GIF over 20MB is sent as a link in the text instead of a file. No Stories; a reel is one video message. Discord gives no view counts: `analytics:post` shows reactions (`likes` = all reactions, `reactions` per emoji) and poll votes.
+The workspace connects one Discord channel in the OmniSocials dashboard (Continue with Discord, or a pasted webhook URL); OmniSocials posts through that channel's incoming webhook, so a post shows the webhook's name and picture as the sender (change them in Discord, Server Settings > Integrations > Webhooks). `accounts:list` prints the server name (a pasted webhook URL gives none: then the webhook's name) and the channel link. Text up to 2,000 chars. Up to 10 images, GIFs and videos in one message, mixed; a video or GIF over 20MB is sent as a link in the text instead of a file. No Stories and no reels: send a video as a post (a reel that names `discord` is still accepted and goes as one video message). Discord gives no view counts: `analytics:post` shows reactions (`likes` = all reactions, `reactions` per emoji) and poll votes.
 
 | Flag | Description |
 |---|---|
