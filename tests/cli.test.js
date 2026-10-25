@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.32.0");
+    expect(stdout).toContain("OmniSocials CLI v1.33.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -2852,7 +2852,7 @@ describe("Comment-to-DM automations (mock API)", () => {
 
         const bad = await run(["automations:events", "100000004", "--outcome", "bounced", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
         expect(bad.exitCode).not.toBe(0);
-        expect(bad.stderr).toContain("--outcome must be one of sent|skipped|failed|pending");
+        expect(bad.stderr).toContain("--outcome must be one of sent|skipped|failed|pending|queued|opted_out");
         expect(calls).toHaveLength(1);
       }
     );
@@ -3147,7 +3147,7 @@ describe("Comment-to-DM automations (mock API)", () => {
 
         const badPlatform = await run([...base, "--platform", "tiktok", "--post-id", "1"]);
         expect(badPlatform.exitCode).not.toBe(0);
-        expect(badPlatform.stderr).toContain("--platform must be one of instagram|facebook");
+        expect(badPlatform.stderr).toContain("--platform must be one of instagram|facebook|x");
 
         const noPost = await run([...base, "--platform", "facebook"]);
         expect(noPost.exitCode).not.toBe(0);
@@ -3177,9 +3177,9 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(stdout).toContain("  Platform: Facebook Page");
         expect(stdout).toContain("  Trigger: comment on the next Facebook post; keywords: guide (whole word)");
 
-        const bad = await run(["automations:list", "--platform", "x", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        const bad = await run(["automations:list", "--platform", "tiktok", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
         expect(bad.exitCode).not.toBe(0);
-        expect(bad.stderr).toContain("--platform must be one of instagram|facebook");
+        expect(bad.stderr).toContain("--platform must be one of instagram|facebook|x");
         expect(calls).toHaveLength(1);
       }
     );
@@ -3231,6 +3231,214 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(mixed.exitCode).not.toBe(0);
         expect(mixed.stderr).toContain("cannot go with --dm-platforms");
         expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  // An X automation: a keyword in a DM to the X account, nothing else.
+  const X_AUTOMATION = {
+    ...AUTOMATION,
+    id: "100000009",
+    platform: "x",
+    status: "paused",
+    name: null,
+    post_id: null,
+    instagram_media_id: null,
+    facebook_post_id: null,
+    post: null,
+    trigger: { kinds: ["dm"], scope: null, keywords: ["guide"], match: "word" },
+    actions: { dm: { text: "Here is the guide" }, public_reply: { enabled: false, variations: [] } },
+    limits: { max_sends: null, stop_at: null },
+    stats: { matched: 0, sent: 0, skipped: 0, failed: 0, last_event_at: null },
+  };
+
+  it("automations:create --platform x sends the dm trigger by default and prints Platform: X", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: X_AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:create",
+          "--platform",
+          "x",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here is the guide",
+          "--paused",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({
+          platform: "x",
+          trigger: { kinds: ["dm"], keywords: ["guide"], match: "word" },
+          actions: { dm: { text: "Here is the guide" } },
+          status: "paused",
+        });
+        expect(stdout).toContain("Platform: X");
+        expect(stdout).toContain("Trigger: DM; keywords: guide (whole word)");
+        expect(stdout).toContain("Turn it on with: automations:update 100000009 --resume (X DMs must be on for the workspace)");
+        expect(stdout).not.toContain("Post:");
+      }
+    );
+  });
+
+  it("automations:create refuses a comment or story trigger, post flags, --scope and --reply on X, before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: X_AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const base = ["automations:create", "--platform", "x", "--dm", "x", "--keywords", "guide", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const comment = await run([...base, "--triggers", "dm,comment"]);
+        expect(comment.exitCode).not.toBe(0);
+        expect(comment.stderr).toContain("X automations answer DMs only: use --triggers dm with --platform x");
+
+        const story = await run([...base, "--triggers", "story_reply"]);
+        expect(story.exitCode).not.toBe(0);
+        expect(story.stderr).toContain("X automations answer DMs only");
+
+        const post = await run([...base, "--post-id", "83778183"]);
+        expect(post.exitCode).not.toBe(0);
+        expect(post.stderr).toContain("--platform x answers DMs only, with no post and no public reply: drop --post-id.");
+
+        const more = await run([...base, "--scope", "any", "--reply", "Sent you a DM!", "--instagram-media-id", "1"]);
+        expect(more.exitCode).not.toBe(0);
+        expect(more.stderr).toContain("drop --instagram-media-id, --scope, --reply.");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("a 409 x_dms_off says where X DMs are turned on; --json prints the API answer", async () => {
+    const dmsOff = {
+      status: 409,
+      json: { error: { code: "x_dms_off", message: "Turn on X DMs first: the automation answers the DMs that X sends to OmniSocials." } },
+    };
+    await withMockServer(
+      () => dmsOff,
+      async (baseUrl, calls) => {
+        const args = ["automations:create", "--platform", "x", "--keywords", "guide", "--dm", "Hi", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+        const human = await run(args);
+        expect(human.exitCode).not.toBe(0);
+        expect(human.stderr).toContain("Error [x_dms_off]: Turn on X DMs first");
+        expect(human.stderr).toContain("Social Inbox, X DMs card, or the automation editor");
+        expect(human.stderr).toContain("--paused");
+
+        const resume = await run(["automations:update", "100000009", "--resume", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(resume.exitCode).not.toBe(0);
+        expect(calls[1].body).toEqual({ status: "active" });
+        expect(resume.stderr).toContain("Error [x_dms_off]");
+
+        const raw = await run([...args, "--json"]);
+        expect(raw.exitCode).not.toBe(0);
+        expect(raw.stdout + raw.stderr).toContain('"x_dms_off"');
+        expect(raw.stderr).not.toContain("Social Inbox, X DMs card");
+      }
+    );
+  });
+
+  it("automations:list --platform x and automations:events print queued and opted_out rows", async () => {
+    const events = [
+      {
+        id: "11",
+        automation_id: "100000009",
+        kind: "dm",
+        outcome: "queued",
+        reason: "rate_limited",
+        reason_label: "Waiting for room under the send limit. It goes out within the hour",
+        person: { id: "44", username: "jane" },
+        trigger_id: "dm_1",
+        trigger_text: null,
+        message: null,
+        public_reply: null,
+        platform_message_id: null,
+        created_at: "2026-10-25T10:00:00.000Z",
+        sent_at: null,
+      },
+      {
+        id: "12",
+        automation_id: "100000009",
+        kind: "dm",
+        outcome: "opted_out",
+        reason: null,
+        reason_label: null,
+        person: { id: "45", username: "bob" },
+        trigger_id: "dm_2",
+        trigger_text: null,
+        message: null,
+        public_reply: null,
+        platform_message_id: null,
+        created_at: "2026-10-25T10:01:00.000Z",
+        sent_at: null,
+      },
+      {
+        id: "13",
+        automation_id: "100000009",
+        kind: "dm",
+        outcome: "skipped",
+        reason: "no_credits",
+        reason_label: "Credits ran out before the answer. Top up, then answer in the Social Inbox",
+        person: { id: "46", username: "amy" },
+        trigger_id: "dm_3",
+        trigger_text: null,
+        message: null,
+        public_reply: null,
+        platform_message_id: null,
+        created_at: "2026-10-25T10:02:00.000Z",
+        sent_at: null,
+      },
+    ];
+    await withMockServer(
+      (req) =>
+        req.url.includes("/events")
+          ? { json: { data: events, counts: { queued: 1, opted_out: 1, skipped: 1 }, pagination: { total: 3, limit: 25, offset: 0, has_more: false } } }
+          : { json: { data: [{ ...X_AUTOMATION, status: "active" }] } },
+      async (baseUrl, calls) => {
+        const list = await run(["automations:list", "--platform", "x", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(list.exitCode).toBe(0);
+        expect(calls[0].query.get("platform")).toBe("x");
+        expect(list.stdout).toContain("  Platform: X");
+        expect(list.stdout).toContain("  Trigger: DM; keywords: guide (whole word)");
+
+        const { stdout, exitCode } = await run(["automations:events", "100000009", "--outcome", "queued", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls[1].query.get("outcome")).toBe("queued");
+        expect(stdout).toContain("Counts: 1 queued, 1 opted_out, 1 skipped");
+        // The API's reason_label wins; a row without one gets the CLI's note.
+        expect(stdout).toContain("2026-10-25T10:00:00.000Z  DM  queued (Waiting for room under the send limit. It goes out within the hour)  @jane");
+        expect(stdout).toContain("2026-10-25T10:01:00.000Z  DM  opted_out (replied STOP: no automatic DMs from this account again)  @bob");
+        expect(stdout).toContain("skipped (Credits ran out before the answer. Top up, then answer in the Social Inbox)  @amy");
+      }
+    );
+  });
+
+  it("--dm-platforms refuses x: the automation of a post answers comments", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1" } } }),
+      async (baseUrl, calls) => {
+        const bad = await run([
+          "posts:create",
+          "--text",
+          "Comment GUIDE",
+          "--channels",
+          "x",
+          "--dm-keywords",
+          "guide",
+          "--dm-message",
+          "Here you go",
+          "--dm-platforms",
+          "x",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain('--dm-platforms: "x" is not one of instagram|facebook');
+        expect(calls).toHaveLength(0);
       }
     );
   });

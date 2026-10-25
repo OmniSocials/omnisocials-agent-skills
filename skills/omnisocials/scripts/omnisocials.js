@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.32.0";
+const VERSION = "1.33.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -440,17 +440,27 @@ function assemblePlatformOptions(flags) {
 // reply) with a DM, once per person, with an optional public reply under the
 // comment. On a Facebook Page (--platform facebook) it answers a keyword in a
 // comment or a Messenger message, and the DM lands in Messenger; a Page has
-// no story replies. Meta allows one private reply per comment within 7 days,
-// and OmniSocials sends at most 180 DMs an hour per account and platform. The
-// scopes are opt-in on the key: without them every call answers 403
-// insufficient_scope.
+// no story replies. On X (--platform x) it answers a keyword in a DM only (X
+// allows an automated DM only after the person wrote first): no post, no
+// public reply, it runs only while X DMs are on for the workspace (else 409
+// x_dms_off), every answer ends with "Reply STOP to stop automatic
+// messages." and a person who replies STOP gets no automatic DM again. Meta
+// allows one private reply per comment within 7 days, OmniSocials sends at
+// most 180 DMs an hour per account on Instagram and Facebook, and on X 15 per
+// 15 minutes and 450 a day; an answer over the cap (or one X asked to wait
+// for) waits in a queue (outcome queued) for up to an hour. The stop list
+// belongs to the X account: it holds after the automation is deleted, for
+// later automations and in every workspace with that account. The scopes are
+// opt-in on the key: without them every call answers 403 insufficient_scope.
 const AUTOMATION_MATCHES = ["word", "contains", "any"];
 const AUTOMATION_SCOPES = ["post", "next_post", "any"];
 const AUTOMATION_KINDS = ["comment", "dm", "story_reply"];
-const AUTOMATION_PLATFORMS = ["instagram", "facebook"];
-const AUTOMATION_PLATFORM_WORDS = { instagram: "Instagram", facebook: "Facebook" };
+const AUTOMATION_PLATFORMS = ["instagram", "facebook", "x"];
+// --dm-platforms: the automation of a post answers comments, which X has not.
+const POST_DM_PLATFORMS = ["instagram", "facebook"];
+const AUTOMATION_PLATFORM_WORDS = { instagram: "Instagram", facebook: "Facebook", x: "X" };
 const AUTOMATION_STATUSES = ["active", "paused", "completed"];
-const AUTOMATION_EVENT_OUTCOMES = ["sent", "skipped", "failed", "pending"];
+const AUTOMATION_EVENT_OUTCOMES = ["sent", "skipped", "failed", "pending", "queued", "opted_out"];
 const AUTOMATIONS_SCOPE_HINT =
   "Enable Automations on the API key (Settings > API: adds automations:read and automations:write).";
 
@@ -525,16 +535,30 @@ function parseStopAt(flag, value) {
 //     trigger: { kinds, scope, keywords, match },
 //     actions: { dm: { text }, public_reply: { enabled, variations } },
 //     limits: { max_sends, stop_at }, status }
-// `platform` is instagram (the API's default) or facebook (a Facebook Page);
-// --facebook-post-id implies facebook. `scope` only means something for the
-// comment trigger (post = the post named here, next_post = the next post the
-// workspace publishes on the automation's channel, any = every post); on
-// create it is sent when a comment trigger is in.
+// `platform` is instagram (the API's default), facebook (a Facebook Page) or
+// x (the X account, DMs only); --facebook-post-id implies facebook. `scope`
+// only means something for the comment trigger (post = the post named here,
+// next_post = the next post the workspace publishes on the automation's
+// channel, any = every post); on create it is sent when a comment trigger is
+// in. On X the trigger is dm (the default there).
 function buildAutomationBody(flags, { partial = false } = {}) {
   const body = {};
 
   if (flags.name !== undefined) body.name = requireValue("--name", flags.name);
   if (flags.platform !== undefined) body.platform = pickOneOf("--platform", flags.platform, AUTOMATION_PLATFORMS);
+
+  // X answers DMs only: no post, no scope, no public reply. The API would
+  // refuse or ignore those flags, but the fix is a flag, so say so first.
+  if (body.platform === "x") {
+    const notOnX = ["post-id", "instagram-media-id", "facebook-post-id", "scope", "reply"].filter(
+      (f) => flags[f] !== undefined
+    );
+    if (notOnX.length) {
+      exitWithError(
+        `--platform x answers DMs only, with no post and no public reply: drop ${notOnX.map((f) => `--${f}`).join(", ")}.`
+      );
+    }
+  }
 
   const postFlags = ["post-id", "instagram-media-id", "facebook-post-id"].filter((f) => flags[f] !== undefined);
   if (postFlags.length > 1) {
@@ -568,8 +592,15 @@ function buildAutomationBody(flags, { partial = false } = {}) {
         ? pickSomeOf("--triggers", flags.triggers, AUTOMATION_KINDS)
         : partial
           ? undefined
-          : ["comment"];
+          : platform === "x"
+            ? ["dm"]
+            : ["comment"];
     if (kinds) trigger.kinds = kinds;
+    // X allows an automated DM only after the person wrote first, so an X
+    // automation has the dm trigger alone (the API answers 400 otherwise).
+    if (platform === "x" && kinds && kinds.some((k) => k !== "dm")) {
+      exitWithError("X automations answer DMs only: use --triggers dm with --platform x (or leave --triggers out).");
+    }
     // A Facebook Page has no story replies; the API would answer 400, but the
     // fix is a flag, so say so before the call.
     if (platform === "facebook" && kinds && kinds.includes("story_reply")) {
@@ -687,7 +718,7 @@ function buildPostCommentDm(flags) {
     if (flags["dm-stop-at"] !== undefined) automation.limits.stop_at = parseStopAt("--dm-stop-at", flags["dm-stop-at"]);
   }
   if (flags["dm-platforms"] !== undefined) {
-    automation.platforms = pickSomeOf("--dm-platforms", flags["dm-platforms"], AUTOMATION_PLATFORMS);
+    automation.platforms = pickSomeOf("--dm-platforms", flags["dm-platforms"], POST_DM_PLATFORMS);
   }
   return automation;
 }
@@ -1193,7 +1224,7 @@ function describeAutomationPost(a) {
   return "";
 }
 
-// "Instagram" or "Facebook Page": the channel an automation runs on.
+// "Instagram", "Facebook Page" or "X": the channel an automation runs on.
 function describeAutomationPlatform(a) {
   return a.platform === "facebook" ? "Facebook Page" : AUTOMATION_PLATFORM_WORDS[a.platform] || "Instagram";
 }
@@ -1248,13 +1279,21 @@ function formatAutomationDetail(a) {
   return lines.join("\n");
 }
 
+// What a queued or opted_out row means when the API sent no reason_label
+// (the API labels both since 2026-10-25; older answers had none).
+const AUTOMATION_OUTCOME_NOTES = {
+  queued: "waits for a free send slot, goes out within the hour",
+  opted_out: "replied STOP: no automatic DMs from this account again",
+};
+
 // One row of automations:events: time, kind, outcome (with the reason when
 // it was skipped or failed), who, what they wrote, the DM that went out.
 function formatAutomationEvent(e) {
   const person = e.person || {};
   const who = person.username ? `@${person.username}` : person.id ? `person ${person.id}` : "(unknown)";
   let outcome = e.outcome || "?";
-  if (e.reason_label || e.reason) outcome += ` (${e.reason_label || e.reason})`;
+  const note = e.reason_label || e.reason || AUTOMATION_OUTCOME_NOTES[e.outcome];
+  if (note) outcome += ` (${note})`;
   const parts = [e.created_at || e.sent_at || "", AUTOMATION_KIND_WORDS[e.kind] || e.kind || "", outcome, who];
   if (e.trigger_text) parts.push(`"${truncate(e.trigger_text, 60)}"`);
   if (e.message) parts.push(`DM: "${truncate(e.message, 60)}"`);
@@ -1468,13 +1507,22 @@ function handleResult(result, flags, formatter) {
 // handleResult plus the scope hint. Every automation call, and a post call
 // whose body carries comment_dm_automation, answers 403 insufficient_scope on
 // a key without the opt-in Automations scopes; the fix is a key setting, so
-// name it. A 409 automation_exists names the automation the post already has.
+// name it. A 409 automation_exists names the automation the post already has,
+// and a 409 x_dms_off says where X DMs are turned on.
 function handleAutomationResult(result, flags, formatter) {
   const error = result && result.error;
   if (error && error.code === "insufficient_scope") {
     if (flags.json) outputJson(result);
     else console.error(`Error [${error.code}]: ${error.message}`);
     console.error(AUTOMATIONS_SCOPE_HINT);
+    process.exit(1);
+  }
+  // An active X automation needs X DMs on: the switch is in the dashboard.
+  if (error && error.code === "x_dms_off" && !flags.json) {
+    console.error(`Error [${error.code}]: ${error.message}`);
+    console.error(
+      "Turn on X DMs for the workspace in OmniSocials (Social Inbox, X DMs card, or the automation editor), or create the automation with --paused and resume it later."
+    );
     process.exit(1);
   }
   if (error && error.code === "automation_exists" && error.automation_id && !flags.json) {
@@ -2318,7 +2366,7 @@ async function cmdAutomationsGet(config, flags, positional) {
 async function cmdAutomationsCreate(config, flags) {
   if (flags.dm === undefined) {
     exitWithError(
-      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--platform instagram|facebook --instagram-media-id <id> | --facebook-post-id <id> --reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --paused]'
+      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--platform instagram|facebook|x --instagram-media-id <id> | --facebook-post-id <id> --reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --paused]'
     );
   }
 
@@ -2328,7 +2376,9 @@ async function cmdAutomationsCreate(config, flags) {
     console.log("Automation created!");
     console.log(formatAutomationDetail(d));
     if (d.status === "paused") {
-      console.log(`Turn it on with: automations:update ${d.id} --resume`);
+      console.log(
+        `Turn it on with: automations:update ${d.id} --resume${d.platform === "x" ? " (X DMs must be on for the workspace)" : ""}`
+      );
     } else if (d.post_id && !d.instagram_media_id && !d.facebook_post_id) {
       console.log(`It starts listening once the post is live on ${d.platform === "facebook" ? "Facebook" : "Instagram"}.`);
     }
@@ -2372,7 +2422,7 @@ async function cmdAutomationsEvents(config, flags, positional) {
   const id = flags.id || positional[0];
   if (!id) {
     exitWithError(
-      "Usage: omnisocials automations:events <id> [--outcome sent|skipped|failed|pending --limit <1-100> --offset <n>]"
+      "Usage: omnisocials automations:events <id> [--outcome sent|skipped|failed|pending|queued|opted_out --limit <1-100> --offset <n>]"
     );
   }
 
@@ -3420,13 +3470,13 @@ HASHTAG SETS
   hashtag-sets:update <id>       Rename / replace tags [--name --tags] (--tags replaces the FULL list)
   hashtag-sets:delete <id>       Delete a set (existing posts keep their tags)
 
-AUTOMATIONS (comment to DM on Instagram or a Facebook Page: needs the opt-in automations:read / automations:write scopes)
-  automations:list               List automations: trigger, post, stats [--status active|paused|completed --platform instagram|facebook --post-id <id>]
+AUTOMATIONS (comment to DM on Instagram or a Facebook Page, DM keywords on X: needs the opt-in automations:read / automations:write scopes)
+  automations:list               List automations: trigger, post, stats [--status active|paused|completed --platform instagram|facebook|x --post-id <id>]
   automations:get <id>           Full detail: trigger, post, DM, public reply, limits, stats
-  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --platform instagram|facebook (default instagram; on Facebook the DM lands in Messenger) --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply (Facebook: comment,dm) --max-sends <n> --stop-at <ISO8601> --name --paused]
+  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --platform instagram|facebook|x (default instagram; on Facebook the DM lands in Messenger; on X it answers DMs only, with no post or reply, while X DMs are on) --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply (Facebook: comment,dm; X: dm) --max-sends <n> --stop-at <ISO8601> --name --paused]
   automations:update <id>        Change only what you pass; the rest keeps its value [same flags, plus --pause | --resume]
   automations:delete <id>        Delete an automation (DMs that went out stay)
-  automations:events <id>        Activity: who wrote what, the DM sent or why it was skipped [--outcome sent|skipped|failed|pending --limit <1-100> --offset]
+  automations:events <id>        Activity: who wrote what, the DM sent, queued or why it was skipped [--outcome sent|skipped|failed|pending|queued|opted_out --limit <1-100> --offset]
 
 LOCATIONS
   locations:search "<name>"      Find location ids for a place [--platform instagram|threads --latitude --longitude]
@@ -3589,6 +3639,7 @@ EXAMPLES
   omnisocials posts:create --text "Comment GUIDE for the free checklist" --channels instagram --media-urls "https://example.com/photo.jpg" --dm-keywords "guide" --dm-message "Here is the checklist: https://example.com/guide" --dm-reply "Sent you a DM!"
   omnisocials automations:create --post-id 83778183 --keywords "guide,link" --dm "Here is the guide: https://example.com/guide" --reply "Sent you a DM!" --reply "Check your inbox"
   omnisocials automations:create --platform facebook --facebook-post-id 104857600_123456789 --keywords "guide" --dm "Here is the guide: https://example.com/guide"
+  omnisocials automations:create --platform x --keywords "guide" --dm "Here is the guide: https://example.com/guide" --paused
   omnisocials automations:events 100000004
   omnisocials inbox:list --platform instagram --unread
   omnisocials inbox:next --platform instagram
