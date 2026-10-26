@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.33.0";
+const VERSION = "1.34.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -2769,10 +2769,51 @@ const METRIC_LABELS = [
   ["favorites", "favorites"],
   ["plays", "plays"],
   ["engagement", "engagements"],
+  ["hold_rate_3s", "% still watching at 3s"],
 ];
 
 // Context keys that ride along in stored metrics — not counters.
 const NON_COUNTER_KEYS = new Set(["create_time"]);
+
+// One line for a `retention_curve` (TikTok videos, Facebook Reels and
+// videos): % still watching at 1, 3, 5, 10, 15 and 30 seconds and at each
+// quarter. Mirrors retentionSummary in the web app's
+// backend/utils/analytics/retentionCurve.js; keep in sync.
+function retentionSummary(curve) {
+  if (!curve || typeof curve !== "object" || !Array.isArray(curve.points) || curve.points.length < 2) return "";
+  const pts = curve.points;
+  const at = (x) => {
+    if (x < pts[0][0] || x > pts[pts.length - 1][0]) return undefined;
+    for (let i = 0; i < pts.length; i++) {
+      if (pts[i][0] === x) return pts[i][1];
+      if (pts[i][0] > x) {
+        const [x0, y0] = pts[i - 1];
+        const [x1, y1] = pts[i];
+        return y0 + ((y1 - y0) * (x - x0)) / (x1 - x0);
+      }
+    }
+    return undefined;
+  };
+  const len = Number(curve.duration) > 0 ? Number(curve.duration) : undefined;
+  const atSecond = (s) =>
+    curve.x === "seconds" ? at(s) : curve.x === "percent" && len ? at((s / len) * 100) : undefined;
+  const atShare = (p) =>
+    curve.x === "percent" ? at(p) : len ? at((p / 100) * len) : undefined;
+  const parts = [];
+  const of3sViews = curve.base === "views_3s";
+  if (!of3sViews) {
+    for (const s of [1, 3, 5, 10, 15, 30]) {
+      const v = atSecond(s);
+      if (v !== undefined) parts.push(`${s}s ${Math.round(v)}%`);
+    }
+  }
+  for (const share of [25, 50, 75, 100]) {
+    const v = atShare(share);
+    if (v !== undefined) parts.push(`${share === 100 ? "end" : `${share}%`} ${Math.round(v)}%`);
+  }
+  if (!parts.length) return "";
+  return of3sViews ? `${parts.join(" · ")} (of 3-second views)` : parts.join(" · ");
+}
 
 // Flatten a raw metrics object into ordered [label, value] pairs, keeping every
 // numeric counter the platform reported. Strings (note, title, cover_image_url)
@@ -2925,8 +2966,10 @@ async function cmdAnalyticsPost(config, flags, positional) {
     console.log("\nPer-platform (every metric the platform reported):");
     for (const p of perPlatform) {
       const parts = metricRows(p.metrics).map(([label, n]) => `${n} ${label}`);
+      const retention = retentionSummary(p.metrics.retention_curve);
+      const still = retention ? `\n    still watching: ${retention}` : "";
       const note = typeof p.metrics.note === "string" ? `\n    note: ${p.metrics.note}` : "";
-      console.log(`  ${p.platform}: ${parts.join(", ") || "no metrics"}${note}`);
+      console.log(`  ${p.platform}: ${parts.join(", ") || "no metrics"}${still}${note}`);
     }
   });
 }

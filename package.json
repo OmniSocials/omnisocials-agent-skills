@@ -1,6 +1,6 @@
 {
   "name": "omnisocials-agent-skills",
-  "version": "1.33.0",
+  "version": "1.34.0",
   "private": true,
   "description": "AI agent skills for managing social media across 13 platforms via OmniSocials",
   "scripts": {

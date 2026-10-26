@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.34.0 (2026-10-26)
+
+### Added
+- **Video retention in `analytics:post`.** The API now returns `hold_rate_3s` (the percent of viewers still watching at second 3: TikTok videos with TikTok comments enabled, Facebook Reels, and Instagram Reels as 100 minus `skip_rate`), which the CLI prints as `% still watching at 3s`, and `retention_curve` (TikTok videos, Facebook Reels and feed videos), which it prints under the platform as `still watching: 1s 92% · 3s 71% · ... · end 22%`. A Facebook feed video's curve counts against 3-second views, so it shows the quarters only. `--json` gives the full curve: `{ x: "seconds" | "percent", base, duration, points: [[position, percent], ...] }`. Instagram and YouTube give no curve through their APIs.
+
+### Fixed
+- **Instagram Reels carry `skip_rate` again (API behaviour, no CLI change).** Meta refused one metric of the Reel request, so every Reel since August came back without the skip rate.
+
 ## 1.33.0 (2026-10-25)
 
 ### Added
