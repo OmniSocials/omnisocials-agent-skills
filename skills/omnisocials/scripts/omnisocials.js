@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.34.0";
+const VERSION = "1.35.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -244,6 +244,23 @@ function parseMediaFit(value) {
 function parseDiscordThreadName(value) {
   const name = requireValue("--discord-thread-name", value);
   return name === "null" ? null : name;
+}
+
+// --threads-topic "Build in public": the Threads topic (threads.topic_tag),
+// one per post. Threads' rules: 1 to 50 characters, no period and no
+// ampersand; spaces are fine. A leading "#" is dropped like the API does.
+// "null" (or an empty value) on posts:update removes the topic.
+function parseThreadsTopic(value) {
+  const raw = value === true ? "" : String(value);
+  const topic = raw.replace(/\s+/g, " ").trim().replace(/^#+\s*/, "").trim();
+  if (!topic || topic === "null") return null;
+  if (topic.length > 50) {
+    exitWithError(`--threads-topic can be up to 50 characters (got ${topic.length})`);
+  }
+  if (/[.&]/.test(topic)) {
+    exitWithError("--threads-topic cannot contain a period (.) or an ampersand (&)");
+  }
+  return topic;
 }
 
 // --discord-button "text|url": one link button, split on the FIRST "|" so the
@@ -851,6 +868,12 @@ function buildPostBody(flags) {
     };
   }
 
+  // Threads topic (threads.topic_tag). On a multi-post thread the topic goes
+  // on the first post.
+  if (flags["threads-topic"] !== undefined) {
+    body.threads = { ...(body.threads || {}), topic_tag: parseThreadsTopic(flags["threads-topic"]) };
+  }
+
   // Google Business extras. The CTA button is the ONLY way to put a link or
   // phone number on a GBP post — captions reject both. Simple CTA + topic
   // type get their own flags; the JSON-heavy EVENT/OFFER shapes go through
@@ -1082,6 +1105,10 @@ function formatPost(post, index) {
   const productTagsResult = post.pinterest && post.pinterest.product_tags_result;
   if (productTagsResult && typeof productTagsResult === "object") {
     lines.push(`    Pinterest products: ${formatProductTagsResult(productTagsResult)}`);
+  }
+  // Threads: the topic of the post.
+  if (post.threads && typeof post.threads.topic_tag === "string" && post.threads.topic_tag) {
+    lines.push(`    Threads topic: ${post.threads.topic_tag}`);
   }
   // Telegram: where the post landed and whether the pin worked.
   const telegramResult = post.telegram && post.telegram.result;
@@ -3589,6 +3616,7 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --no-dm                        posts:update only: remove the post's comment-to-DM automation
   --location-id <id>             Instagram place tag (from locations:search)
   --threads-location-id <id>     Threads place tag (from locations:search --platform threads; "null" clears on update)
+  --threads-topic "<topic>"      Threads topic, one per post (1-50 chars, spaces ok, no . or &; "null" removes on update)
   --collaborators <a,b>          Instagram co-author usernames (max 3)
   --user-tags '<json>'           Instagram photo tags, JSON array [{"username","x","y","image_index?"}]
   --x-thread "a || b || c"       Post an X thread; parts split on "||"

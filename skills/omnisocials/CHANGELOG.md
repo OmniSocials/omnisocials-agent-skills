@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.35.0 (2026-10-27)
+
+### Added
+- **The Threads topic: `--threads-topic "<topic>"` on `posts:create`, `posts:create-and-publish` and `posts:update`.** Sent as `threads.topic_tag`: the topic of the post on Threads, one per post, for example `"Build in public"`. Unlike a #tag in the text, a topic can hold spaces. 1 to 50 characters, no period and no ampersand; a leading `#` is dropped. The CLI refuses a longer topic or one with `.` or `&` before it calls the API. On a multi-post thread the topic goes on the first post. `--threads-topic null` on `posts:update` removes it. `posts:list` prints `Threads topic: ...`, and `posts:get` returns it as `threads.topic_tag`. SKILL.md gets the flag, a Common Actions row and an example.
+
 ## 1.34.0 (2026-10-26)
 
 ### Added

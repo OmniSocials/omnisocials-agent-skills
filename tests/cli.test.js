@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.34.0");
+    expect(stdout).toContain("OmniSocials CLI v1.35.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -1032,6 +1032,90 @@ describe("CLI basics", () => {
     ]);
     expect(exitCode).not.toBe(0);
     expect(stderr).toContain("Usage:");
+  });
+});
+
+describe("Threads topic (mock API)", () => {
+  it("posts:create sends --threads-topic as threads.topic_tag, trimmed and without the #", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Week 12 of building in public",
+          "--channels",
+          "threads",
+          "--threads-topic",
+          "  #Build   in public ",
+          "--threads-location-id",
+          "123",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.threads).toEqual({ location_id: "123", topic_tag: "Build in public" });
+      }
+    );
+  });
+
+  it("posts:update --threads-topic null removes the topic", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run(["posts:update", "p1", "--threads-topic", "null", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].body.threads).toEqual({ topic_tag: null });
+      }
+    );
+  });
+
+  it("posts:create refuses a topic over 50 characters or with a period before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "draft" } } }),
+      async (baseUrl, calls) => {
+        const base = ["posts:create", "--text", "Hi", "--channels", "threads", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+        const long = await run([...base, "--threads-topic", "a".repeat(51)]);
+        expect(long.exitCode).not.toBe(0);
+        expect(long.stderr).toContain("--threads-topic can be up to 50 characters (got 51)");
+        const dot = await run([...base, "--threads-topic", "Node.js"]);
+        expect(dot.exitCode).not.toBe(0);
+        expect(dot.stderr).toContain("--threads-topic cannot contain a period (.) or an ampersand (&)");
+        expect(calls.length).toBe(0);
+      }
+    );
+  });
+
+  it("posts:list prints the Threads topic", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            {
+              id: "p1",
+              status: "draft",
+              content: { default: "Week 12" },
+              accounts: ["threads"],
+              threads: { topic_tag: "Build in public" },
+              created_at: "2026-10-26T08:00:00Z",
+            },
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["posts:list", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Threads topic: Build in public");
+      }
+    );
+  });
+
+  it("--help lists --threads-topic", async () => {
+    const { stdout } = await run(["--help"]);
+    expect(stdout).toContain("--threads-topic");
   });
 });
 
