@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.36.0 (2026-10-27)
+
+### Added
+- **`inbox:like <message-id>` likes a comment as the Page/account; `--unlike` removes the like.** Calls `POST /inbox/messages/{id}/like` with `{ "like": true }` (or `false` with `--unlike`). Facebook Page, LinkedIn Page and TikTok comments, incoming only. Facebook allows only Like: no Love or other reactions. Liking a comment that is already liked (or unliking one that is not) succeeds. Takes the message id from `inbox:messages` or `inbox:next`, not the conversation id. Prints `Comment 42 on facebook is now liked.` or `Comment 42 on facebook: like removed.`; `--json` prints the comment after the change. Errors: 400 `unsupported_platform`, 403 `reconnect_required` (Facebook connected without the comment-moderation permission: reconnect it in the dashboard), 401 `reauth_required`, 404 `not_found` / `account_not_connected`, 502 `platform_error`. Needs `inbox:write`.
+- **`liked` on inbox messages.** `true` when the connected account liked the comment, `false` when not, `null` where the platform has no like through OmniSocials (DMs, Instagram, YouTube, X, Threads). `inbox:messages` and the `inbox:next` thread mark a liked comment `liked` next to `hidden`, and the `inbox:next` hint names `inbox:like` on a comment that can be liked. SKILL.md gets the command, a Common Actions row and an example; the README lists it.
+
 ## 1.35.0 (2026-10-27)
 
 ### Added

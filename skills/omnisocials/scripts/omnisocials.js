@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.35.0";
+const VERSION = "1.36.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1401,6 +1401,9 @@ function formatMessage(msg, index) {
   // Comments on every inbox platform: true when hidden on the platform (flip
   // with inbox:hide). DMs have no hidden state (null).
   if (msg.hidden === true) meta.push("hidden");
+  // Facebook, LinkedIn Page and TikTok comments: true when the connected
+  // account liked it (flip with inbox:like). null everywhere else.
+  if (msg.liked === true) meta.push("liked");
   lines.push(`    ${meta.join("  ·  ")}`);
   if (msg.permalink) lines.push(`    ${msg.permalink}`);
   return lines.join("\n");
@@ -1456,7 +1459,7 @@ function printNextItem(data, remaining) {
   console.log("─".repeat(40));
   // Two ids matter: the conversation id (inbox:reply / inbox:read) and the
   // message id of the unanswered item (inbox:reply --message-id on comment
-  // threads, inbox:hide / inbox:delete).
+  // threads, inbox:hide / inbox:delete / inbox:like).
   console.log(`Conversation: ${convId}`);
   console.log(
     `Message to answer: ${msg.id}${msg.timestamp ? `  ${msg.timestamp}` : ""}${
@@ -1499,8 +1502,12 @@ function printNextItem(data, remaining) {
     return;
   }
   const messageId = isComment ? ` --message-id ${msg.id}` : "";
+  // `liked` is false only where a like is possible (Facebook, LinkedIn Page,
+  // TikTok comments); null means the platform has no like through the API.
   const moderation = isComment
-    ? `; hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}`
+    ? `; hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}${
+        msg.liked === false ? `; like it with inbox:like ${msg.id}` : ""
+      }`
     : "";
   console.log(
     `Reply with inbox:reply "${convId}" --text "..."${messageId} --next; skip it for good with inbox:read "${convId}"${moderation}`
@@ -3296,6 +3303,42 @@ async function cmdInboxHide(config, flags, positional) {
   });
 }
 
+// Like (or remove the like with --unlike) a comment someone left on one of
+// the user's posts, as the connected Page/account. Facebook Page, LinkedIn
+// Page and TikTok comments, incoming only. Facebook allows only Like: no Love
+// or other reactions. Liking a liked comment (or unliking one that is not
+// liked) succeeds. Takes the message id from inbox:messages or inbox:next, NOT
+// the conversation id. The response is the comment after the change, with
+// `liked`. Errors worth relaying: 400 unsupported_platform, 403
+// reconnect_required (Facebook connected without the comment-moderation
+// permission; reconnect it in the dashboard), 401 reauth_required, 404
+// not_found / account_not_connected, 502 platform_error.
+async function cmdInboxLike(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    console.error(
+      "Usage: omnisocials inbox:like <message-id> [--unlike]  (Facebook, LinkedIn Page, TikTok comments on your posts; id from inbox:messages or inbox:next)"
+    );
+    process.exit(1);
+  }
+
+  const result = await apiRequest(
+    config,
+    "POST",
+    `/inbox/messages/${encodeURIComponent(id)}/like`,
+    { like: !flags.unlike }
+  );
+
+  handleResult(result, flags, (data) => {
+    const where = data && data.platform ? ` on ${data.platform}` : "";
+    if (data && data.liked === true) {
+      console.log(`Comment ${id}${where} is now liked.`);
+    } else {
+      console.log(`Comment ${id}${where}: like removed.`);
+    }
+  });
+}
+
 // Work queue: the next conversation that still needs an answer, with its
 // thread and the post it is on, so a reply can be drafted from one call.
 // Order: DMs that can still be answered first (Instagram/Facebook DMs inside
@@ -3576,6 +3619,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:read <conv-id>           Mark a conversation's messages as read; also the durable skip for inbox:next (inbox:write)
   inbox:reply <conv-id>          Reply to a conversation [--text (required) --message-id <message-id> (the comment being answered; always pass it on comment threads) --attachment-url --attachment-type --next] (inbox:write)
   inbox:hide <message-id>        Hide a comment on your post (Facebook, Instagram, TikTok, YouTube, Threads); --unhide reverses it (inbox:write)
+  inbox:like <message-id>        Like a comment on your post as the Page/account (Facebook, LinkedIn Page, TikTok; Facebook: Like only); --unlike removes it (inbox:write)
   inbox:delete <message-id>      Delete a comment from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
 
 WEBHOOKS
@@ -3773,6 +3817,7 @@ const COMMANDS = {
   "inbox:read": { handler: cmdInboxMarkRead },
   "inbox:reply": { handler: cmdInboxReply },
   "inbox:hide": { handler: cmdInboxHide },
+  "inbox:like": { handler: cmdInboxLike },
   "inbox:delete": { handler: cmdInboxDelete },
   "webhooks:list": { handler: cmdWebhooksList },
   "webhooks:create": { handler: cmdWebhooksCreate },

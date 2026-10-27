@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.35.0");
+    expect(stdout).toContain("OmniSocials CLI v1.36.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -1195,6 +1195,33 @@ describe("Inbox commands", () => {
     expect(stderr).not.toContain("Unknown command");
   });
 
+  it("inbox:like requires a message id", async () => {
+    const { stderr, exitCode } = await run([
+      "inbox:like",
+      "--api-key",
+      "omsk_test_fake",
+      "--base-url",
+      "http://localhost:0",
+    ]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("Usage:");
+    expect(stderr).toContain("[--unlike]");
+  });
+
+  it("inbox:like is a known command (requires an API key)", async () => {
+    const { stderr, exitCode } = await run(["inbox:like", "123"]);
+    expect(exitCode).not.toBe(0);
+    expect(stderr).toContain("API key not found");
+    expect(stderr).not.toContain("Unknown command");
+  });
+
+  it("help lists inbox:like with --unlike", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("inbox:like <message-id>");
+    expect(stdout).toContain("--unlike removes it");
+  });
+
   it("help lists inbox:next, inbox:delete, --unanswered and --next", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
@@ -1391,6 +1418,48 @@ describe("Inbox work queue (mock API)", () => {
         expect(stdout).toContain('inbox:reply "ig_comment_18001" --text "..." --message-id 42 --next');
         expect(stdout).toContain('inbox:read "ig_comment_18001"');
         expect(stdout).toContain("inbox:hide 42 / inbox:delete 42");
+      }
+    );
+  });
+
+  it("inbox:next offers inbox:like on a comment that can be liked", async () => {
+    const fb = msg({ platform: "facebook", conversation_id: "fb_comment_9", liked: false });
+    const item = {
+      conversation: { ...NEXT_ITEM.conversation, conversation_id: "fb_comment_9", platform: "facebook" },
+      message: fb,
+      messages: [fb],
+    };
+    await withMockServer(
+      () => ({ json: { data: item, remaining: 0 } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:next",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("inbox:hide 42 / inbox:delete 42; like it with inbox:like 42");
+      }
+    );
+  });
+
+  it("inbox:next leaves inbox:like out when the platform has no like (liked null)", async () => {
+    const ig = msg({ liked: null });
+    await withMockServer(
+      () => ({ json: { data: { ...NEXT_ITEM, message: ig, messages: [ig] }, remaining: 0 } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:next",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("inbox:hide 42 / inbox:delete 42");
+        expect(stdout).not.toContain("inbox:like");
       }
     );
   });
@@ -1607,6 +1676,123 @@ describe("Inbox work queue (mock API)", () => {
         expect(calls[0].path).toBe("/inbox/messages/42/hide");
         expect(calls[0].body).toEqual({ hide: true });
         expect(stdout).toContain("Comment 42 is now hidden on youtube.");
+      }
+    );
+  });
+
+  it("inbox:messages shows 'liked' on a liked comment and nothing for null", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            msg({ id: "50", platform: "tiktok", liked: true }),
+            msg({ id: "51", platform: "tiktok", liked: false }),
+            msg({ id: "52", liked: null }),
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:messages",
+          "tt_comment_1",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout.match(/·  liked/g) || []).toHaveLength(1);
+        expect(stdout).toMatch(/id: 50[^\n]*liked/);
+        expect(stdout).not.toMatch(/id: 51[^\n]*liked/);
+        expect(stdout).not.toMatch(/id: 52[^\n]*liked/);
+      }
+    );
+  });
+
+  it("inbox:like sends like true and names the platform", async () => {
+    await withMockServer(
+      () => ({ json: { data: msg({ platform: "facebook", liked: true }) } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:like",
+          "42",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/inbox/messages/42/like");
+        expect(calls[0].body).toEqual({ like: true });
+        expect(stdout).toContain("Comment 42 on facebook is now liked.");
+      }
+    );
+  });
+
+  it("inbox:like --unlike sends like false", async () => {
+    await withMockServer(
+      () => ({ json: { data: msg({ platform: "linkedin", liked: false }) } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "inbox:like",
+          "42",
+          "--unlike",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({ like: false });
+        expect(stdout).toContain("Comment 42 on linkedin: like removed.");
+      }
+    );
+  });
+
+  it("inbox:like --json prints the API response", async () => {
+    await withMockServer(
+      () => ({ json: { data: msg({ platform: "tiktok", liked: true }) } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:like",
+          "42",
+          "--json",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        const out = JSON.parse(stdout);
+        expect(out.data.liked).toBe(true);
+        expect(out.data.platform).toBe("tiktok");
+      }
+    );
+  });
+
+  it("inbox:like relays the API error envelope", async () => {
+    await withMockServer(
+      () => ({
+        status: 403,
+        json: {
+          error: {
+            code: "reconnect_required",
+            message: "Reconnect Facebook in OmniSocials to like comments.",
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "inbox:like",
+          "42",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [reconnect_required]");
       }
     );
   });
