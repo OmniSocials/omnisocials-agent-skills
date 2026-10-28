@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.36.0");
+    expect(stdout).toContain("OmniSocials CLI v1.37.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -3709,6 +3709,900 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(bad.exitCode).not.toBe(0);
         expect(bad.stderr).toContain('--dm-platforms: "x" is not one of instagram|facebook');
         expect(calls).toHaveLength(0);
+      }
+    );
+  });
+});
+
+// One boost draft as GET /ads/campaigns/{id} and POST /ads/boost return it.
+const AD_CAMPAIGN = {
+  id: 42,
+  name: "Boost: Summer launch post",
+  platform: "meta",
+  campaign_type: "boost",
+  objective: "engagement",
+  status: "draft",
+  budget: { type: "daily", amount: 10, currency: "EUR" },
+  targeting: { countries: ["NL", "BE"] },
+  schedule: { end_at: "2026-12-01T00:00:00Z" },
+  external_campaign_id: null,
+  errors: null,
+  created_at: "2026-10-28T10:00:00.000Z",
+};
+
+const AD_KEY = "0b6e9a2c-3f4d-4e5a-8b9c-1d2e3f4a5b6c";
+const AD_GROUP = "6f0c2c8e-0a4e-4d33-9a51-2f7f8a1b9c10";
+const AD_READY = { ready: true, issues: [], ads: [{ key: AD_KEY, index: 0, ready: true, issues: [] }] };
+const AD_ACCOUNT_META = { id: 7, name: "Acme Ads", currency: "EUR", billing_ok: true, needs_reauth: false };
+
+// A draft on Meta (account attached, ready) and TikTok (20 a day, no account).
+function adDraft({ tiktokAccount = null } = {}) {
+  return {
+    group_id: AD_GROUP,
+    name: "Autumn trips",
+    objective: "traffic",
+    status: "draft",
+    can_launch: true,
+    budget: { type: "daily", amount: 10, currency: "EUR" },
+    schedule: { duration_days: 14 },
+    targeting: { countries: ["NL", "BE"], automatic_audience: true, placements: "automatic" },
+    ads: [
+      {
+        key: AD_KEY,
+        name: "Ad 1",
+        media: [{ url: "https://cdn.example.com/trip.jpg", type: "image", width: 1080, height: 1080 }],
+        primary_text: "Five days in the valley.",
+        primary_text_b: "",
+        headline: "Autumn trips",
+        description: "",
+        cta: "book_now",
+        link: "https://example.com/autumn",
+      },
+    ],
+    campaigns: [
+      {
+        id: 51,
+        platform: "meta",
+        status: "draft",
+        editable: true,
+        external_campaign_id: null,
+        budget: { type: "daily", amount: 10, currency: "EUR" },
+        ad_account: AD_ACCOUNT_META,
+        errors: null,
+        readiness: AD_READY,
+      },
+      {
+        id: 52,
+        platform: "tiktok",
+        status: "draft",
+        editable: true,
+        external_campaign_id: null,
+        budget: { type: "daily", amount: 20, currency: "EUR" },
+        ad_account: tiktokAccount,
+        errors: null,
+        readiness: AD_READY,
+      },
+    ],
+    review_url: `https://app.omnisocials.com/ads/create/${AD_GROUP}`,
+  };
+}
+
+const ADS_SCOPE_ERROR = {
+  status: 403,
+  json: { error: { code: "insufficient_scope", message: "This API key lacks the ads:read scope" } },
+};
+
+// The flags of one ad on ads:create-draft.
+const AD_DRAFT_FLAGS = [
+  "--platforms",
+  "meta,tiktok=20",
+  "--objective",
+  "traffic",
+  "--budget",
+  "10",
+  "--currency",
+  "eur",
+  "--days",
+  "14",
+  "--countries",
+  "nl,be",
+  "--name",
+  "Autumn trips",
+  "--media-url",
+  "https://cdn.example.com/trip.jpg",
+  "--width",
+  "1080",
+  "--height",
+  "1080",
+  "--primary-text",
+  "Five days in the valley.",
+  "--headline",
+  "Autumn trips",
+  "--cta",
+  "book_now",
+  "--link",
+  "https://example.com/autumn",
+];
+
+describe("Ads (mock API)", () => {
+  it("help lists the ads commands, the draft flags and the ad.status_changed webhook event", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("ADS (real money");
+    for (const command of [
+      "ads:accounts",
+      "ads:campaigns",
+      "ads:campaign <id>",
+      "ads:boost",
+      "ads:boost-multi",
+      "ads:create-campaign",
+      "ads:update-campaign <id>",
+      "ads:activate <id>",
+      "ads:activate-multi",
+      "ads:pause <id>",
+      "ads:resume <id>",
+      "ads:delete-campaign <id>",
+      "ads:suggestions",
+      "ads:overview",
+      "ads:keywords",
+      "ads:keyword-metrics",
+      "ads:capabilities",
+      "ads:draft-defaults",
+      "ads:create-draft",
+      "ads:draft <group-id>",
+      "ads:update-draft <group-id>",
+      "ads:delete-draft <group-id>",
+      "ads:attach-account <group-id>",
+      "ads:launch-draft <group-id>",
+    ]) {
+      expect(stdout).toContain(command);
+    }
+    expect(stdout).toContain("AD DRAFT FLAGS");
+    expect(stdout).toContain("--stories-reels-url <url>");
+    expect(stdout).toContain("ad.status_changed");
+  });
+
+  it("ads:boost sends the draft body and says no money is spent", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AD_CAMPAIGN } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:boost",
+          "--post-id",
+          "12345",
+          "--ad-account-id",
+          "7",
+          "--budget",
+          "10",
+          "--currency",
+          "eur",
+          "--objective",
+          "engagement",
+          "--countries",
+          "nl,be",
+          "--end",
+          "2026-12-01T00:00:00Z",
+          "--spark-code",
+          "ABC123",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/ads/boost");
+        expect(calls[0].body).toEqual({
+          post_id: 12345,
+          ad_account_id: 7,
+          budget: { amount: 10, currency: "EUR" },
+          objective: "engagement",
+          schedule: { end_at: "2026-12-01T00:00:00Z" },
+          targeting: { countries: ["NL", "BE"] },
+          creative: { spark_auth_code: "ABC123" },
+        });
+        expect(stdout).toContain("Boost draft created. No money is spent: nothing exists on the ad network yet.");
+        expect(stdout).toContain("Budget: 10 EUR per day");
+        expect(stdout).toContain("omnisocials ads:activate 42 --confirm-budget 10");
+      }
+    );
+  });
+
+  it("ads:boost refuses before any request without a budget and currency, or with a budget that is not a number", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AD_CAMPAIGN } }),
+      async (baseUrl, calls) => {
+        const noBudget = await run(["ads:boost", "--post-id", "12345", "--ad-account-id", "7", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(noBudget.exitCode).not.toBe(0);
+        expect(noBudget.stderr).toContain("Usage: omnisocials ads:boost");
+        expect(noBudget.stderr).toContain("never make one up");
+
+        const word = await run([
+          "ads:boost",
+          "--post-id",
+          "12345",
+          "--ad-account-id",
+          "7",
+          "--budget",
+          "ten",
+          "--currency",
+          "EUR",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(word.exitCode).not.toBe(0);
+        expect(word.stderr).toContain('--budget needs an amount above 0 in major currency units (10 = 10 EUR) (got "ten")');
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("ads:boost-multi sends every ad account and prints the total once all drafts start", async () => {
+    await withMockServer(
+      () => ({
+        status: 201,
+        json: {
+          results: [
+            { ad_account_id: 7, platform: "meta", ok: true, campaign: { ...AD_CAMPAIGN, id: 41 } },
+            { ad_account_id: 9, platform: "tiktok", ok: true, campaign: { ...AD_CAMPAIGN, id: 43, platform: "tiktok" } },
+            { ad_account_id: 12, platform: "x", ok: false, error: "The X ad account requires X Premium.", code: "post_not_boostable" },
+          ],
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:boost-multi",
+          "--post-id",
+          "12345",
+          "--ad-account-ids",
+          "7,9,12",
+          "--budget",
+          "10",
+          "--currency",
+          "EUR",
+          "--headlines",
+          "Summer is here",
+          "--headlines",
+          "New, and on sale",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/ads/boost-multi");
+        expect(calls[0].body).toEqual({
+          post_id: 12345,
+          ad_account_ids: [7, 9, 12],
+          budget: { amount: 10, currency: "EUR" },
+          creative: { headlines: ["Summer is here", "New, and on sale"] },
+        });
+        expect(stdout).toContain("Boost on 3 ad accounts: 2 drafts created. No money is spent");
+        expect(stdout).toContain("#3  Ad account 12 (x): not created, [post_not_boostable] The X ad account requires X Premium.");
+        expect(stdout).toContain("Total once all 2 are started: 10 EUR x 2 campaigns = 20 EUR per day.");
+        expect(stdout).toContain("omnisocials ads:activate-multi --ids 41,43 --confirm-budget 10");
+
+        const tooMany = await run([
+          "ads:boost-multi",
+          "--post-id",
+          "12345",
+          "--ad-account-ids",
+          "1,2,3,4,5,6,7,8,9,10,11",
+          "--budget",
+          "10",
+          "--currency",
+          "EUR",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(tooMany.exitCode).not.toBe(0);
+        expect(tooMany.stderr).toContain("--ad-account-ids takes at most 10 ids per call (got 11)");
+        expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it("ads:create-draft builds the draft body from the flags and hands over the review link", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: adDraft() } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["ads:create-draft", ...AD_DRAFT_FLAGS, "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls).toHaveLength(1);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/ads/drafts");
+        expect(calls[0].body).toEqual({
+          name: "Autumn trips",
+          objective: "traffic",
+          platforms: ["meta", { platform: "tiktok", budget_amount: 20 }],
+          budget: { amount: 10, currency: "EUR" },
+          schedule: { duration_days: 14 },
+          targeting: { countries: ["NL", "BE"] },
+          ads: [
+            {
+              media: [{ url: "https://cdn.example.com/trip.jpg", type: "image", width: 1080, height: 1080 }],
+              primary_text: "Five days in the valley.",
+              headline: "Autumn trips",
+              cta: "book_now",
+              link: "https://example.com/autumn",
+            },
+          ],
+        });
+        expect(stdout).toContain("Ad draft saved.");
+        expect(stdout).toContain(`Draft: ${AD_GROUP}`);
+        expect(stdout).toContain("Runs: 14 days after the start");
+        expect(stdout).toContain("meta (campaign 51): 10 EUR a day, ad account Acme Ads (7), ready");
+        expect(stdout).toContain("tiktok (campaign 52): 20 EUR a day, not ready: no ad account yet (ads:attach-account)");
+        expect(stdout).toContain(`Review and start it in OmniSocials: https://app.omnisocials.com/ads/create/${AD_GROUP}`);
+        expect(stdout).toContain("It is a DRAFT: no money is spent and nothing exists on any ad network.");
+      }
+    );
+  });
+
+  it("ads:create-draft sends Meta's Stories and Reels file as placement_media, the same kind as the main file", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: adDraft() } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "ads:create-draft",
+          "--platforms",
+          "meta",
+          "--objective",
+          "traffic",
+          "--budget",
+          "10",
+          "--currency",
+          "EUR",
+          "--no-end",
+          "--countries",
+          "NL",
+          "--age-min",
+          "25",
+          "--genders",
+          "female",
+          "--media-url",
+          "https://cdn.example.com/trip.mp4",
+          "--thumbnail-url",
+          "https://cdn.example.com/trip-cover.jpg",
+          "--stories-reels-url",
+          "https://cdn.example.com/trip-9x16.mp4",
+          "--stories-reels-width",
+          "1080",
+          "--stories-reels-height",
+          "1920",
+          "--primary-text",
+          "Five days in the valley.",
+          "--link",
+          "https://example.com/autumn",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        const body = calls[0].body;
+        expect(body.schedule).toEqual({ duration_days: null });
+        expect(body.targeting).toEqual({ countries: ["NL"], automatic_audience: false, age_min: 25, genders: ["female"] });
+        expect(body.ads[0].media).toEqual([
+          { url: "https://cdn.example.com/trip.mp4", type: "video", thumbnail_url: "https://cdn.example.com/trip-cover.jpg" },
+        ]);
+        expect(body.ads[0].placement_media).toEqual({
+          stories_reels: { url: "https://cdn.example.com/trip-9x16.mp4", type: "video", width: 1080, height: 1920 },
+        });
+      }
+    );
+  });
+
+  it("ads:create-draft refuses before any request without the run time, an amount, or a complete ad", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: adDraft() } }),
+      async (baseUrl, calls) => {
+        const noDays = AD_DRAFT_FLAGS.filter((f, i, all) => f !== "--days" && all[i - 1] !== "--days");
+        const a = await run(["ads:create-draft", ...noDays, "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(a.exitCode).not.toBe(0);
+        expect(a.stderr).toContain("ads:create-draft needs --days <1-90> or --no-end");
+        expect(a.stderr).toContain("A draft is never saved with a budget or a run time the person did not give.");
+
+        const noBudget = AD_DRAFT_FLAGS.filter((f, i, all) => f !== "--budget" && all[i - 1] !== "--budget");
+        const b = await run(["ads:create-draft", ...noBudget, "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(b.exitCode).not.toBe(0);
+        expect(b.stderr).toContain("ads:create-draft needs --budget");
+
+        const noLink = AD_DRAFT_FLAGS.filter((f, i, all) => f !== "--link" && all[i - 1] !== "--link");
+        const c = await run(["ads:create-draft", ...noLink, "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(c.exitCode).not.toBe(0);
+        expect(c.stderr).toContain("Ad 1 needs --link");
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("ads:update-draft PUTs the whole body from ads:draft --json output, with the flags over it", async () => {
+    const file = path.join(ISOLATED_DIR, "ad-draft.json");
+    fs.writeFileSync(file, JSON.stringify({ data: adDraft() }));
+    await withMockServer(
+      () => ({ status: 200, json: { data: adDraft() } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:update-draft",
+          AD_GROUP,
+          "--draft-file",
+          "ad-draft.json",
+          "--primary-text",
+          "Autumn in the mountains: 3 spots left.",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PUT");
+        expect(calls[0].path).toBe(`/ads/drafts/${AD_GROUP}`);
+        const body = calls[0].body;
+        expect(body.platforms).toEqual(["meta", { platform: "tiktok", budget_amount: 20 }]);
+        expect(body.budget).toEqual({ type: "daily", amount: 10, currency: "EUR" });
+        expect(body.schedule).toEqual({ duration_days: 14 });
+        expect(body.ads).toHaveLength(1);
+        expect(body.ads[0].key).toBe(AD_KEY);
+        expect(body.ads[0].primary_text).toBe("Autumn in the mountains: 3 spots left.");
+        expect(body.ads[0].media[0].url).toBe("https://cdn.example.com/trip.jpg");
+        expect(stdout).toContain("Ad draft saved.");
+
+        const twoAds = path.join(ISOLATED_DIR, "two-ads.json");
+        const draft = adDraft();
+        fs.writeFileSync(twoAds, JSON.stringify({ ...draft, ads: [draft.ads[0], { ...draft.ads[0], key: undefined }] }));
+        const refused = await run([
+          "ads:update-draft",
+          AD_GROUP,
+          "--draft-file",
+          "two-ads.json",
+          "--headline",
+          "New",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(refused.exitCode).not.toBe(0);
+        expect(refused.stderr).toContain("The draft body has 2 ads");
+        expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it("ads:launch-draft refuses before any request without a confirmed amount", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: adDraft() } }),
+      async (baseUrl, calls) => {
+        const { stderr, exitCode } = await run(["ads:launch-draft", AD_GROUP, "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Usage: omnisocials ads:launch-draft <group-id>");
+        expect(stderr).toContain("THIS STARTS REAL AD SPEND");
+        expect(stderr).toContain("never fill them in yourself");
+
+        const bare = await run(["ads:launch-draft", AD_GROUP, "--confirm-budget", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(bare.exitCode).not.toBe(0);
+        expect(bare.stderr).toContain("--confirm-budget needs an amount above 0");
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("ads:launch-draft reads the draft, prints the amount, currency and total, then launches the ready networks", async () => {
+    await withMockServer(
+      (req) =>
+        req.method === "GET"
+          ? { status: 200, json: { data: adDraft() } }
+          : {
+              status: 200,
+              json: {
+                data: {
+                  group: { ...adDraft(), status: "launched" },
+                  results: [
+                    { campaign_id: 51, platform: "meta", ok: true },
+                    { campaign_id: 52, platform: "tiktok", ok: false, code: "no_ad_account", error: "Connect the ad account." },
+                  ],
+                },
+              },
+            },
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:launch-draft",
+          AD_GROUP,
+          "--confirm-budget",
+          "10",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+          `GET /ads/drafts/${AD_GROUP}`,
+          `POST /ads/drafts/${AD_GROUP}/launch`,
+        ]);
+        expect(calls[1].body).toEqual({ confirm_budget_amount: 10 });
+        expect(stdout).toContain(`About to start draft ${AD_GROUP} ("Autumn trips"), 14 days after the start:`);
+        expect(stdout).toContain("meta (campaign 51): 10 EUR a day, ad account Acme Ads (7), ready");
+        expect(stdout).toContain("tiktok (campaign 52): does not start, no ad account yet (ads:attach-account)");
+        expect(stdout).toContain("Total: 10 EUR a day, 140 EUR over 14 days on 1 network. This starts real ad spend.");
+        expect(stdout).toContain("Started 1 of 2 networks.");
+        expect(stdout).toContain("tiktok (campaign 52): not started, [no_ad_account] Connect the ad account.");
+      }
+    );
+  });
+
+  it("ads:launch-draft refuses when a ready network runs at another amount, and takes amounts per network", async () => {
+    const ready = adDraft({ tiktokAccount: { id: 9, name: "Acme TikTok", currency: "EUR", billing_ok: true, needs_reauth: false } });
+    await withMockServer(
+      (req) =>
+        req.method === "GET"
+          ? { status: 200, json: { data: ready } }
+          : {
+              status: 200,
+              json: {
+                data: {
+                  group: ready,
+                  results: [
+                    { campaign_id: 51, platform: "meta", ok: true },
+                    { campaign_id: 52, platform: "tiktok", ok: true },
+                  ],
+                },
+              },
+            },
+      async (baseUrl, calls) => {
+        const wrong = await run(["ads:launch-draft", AD_GROUP, "--confirm-budget", "10", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(wrong.exitCode).not.toBe(0);
+        expect(wrong.stderr).toContain("tiktok (campaign 52) runs at 20 EUR a day, not 10.");
+        expect(wrong.stderr).toContain("Nothing was started.");
+        expect(wrong.stderr).toContain("--confirm-budgets meta=10,tiktok=20");
+        expect(calls.map((c) => c.method)).toEqual(["GET"]);
+
+        const perNetwork = await run([
+          "ads:launch-draft",
+          AD_GROUP,
+          "--confirm-budgets",
+          "meta=10,tiktok=20",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(perNetwork.exitCode).toBe(0);
+        expect(calls[2].method).toBe("POST");
+        expect(calls[2].body).toEqual({ confirm_budget_amounts: { 51: 10, 52: 20 } });
+        expect(perNetwork.stdout).toContain("Total: 30 EUR a day, 420 EUR over 14 days on 2 networks.");
+        expect(perNetwork.stdout).toContain("Started 2 of 2 networks.");
+      }
+    );
+  });
+
+  it("ads:activate refuses without --confirm-budget, reads the campaign, prints the amount and currency, and refuses a mismatch", async () => {
+    await withMockServer(
+      (req) =>
+        req.method === "GET"
+          ? { status: 200, json: { data: AD_CAMPAIGN } }
+          : { status: 200, json: { data: { ...AD_CAMPAIGN, status: "pending_review", external_campaign_id: "2385" } } },
+      async (baseUrl, calls) => {
+        const none = await run(["ads:activate", "42", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(none.exitCode).not.toBe(0);
+        expect(none.stderr).toContain("Usage: omnisocials ads:activate <id> --confirm-budget <amount>");
+        expect(calls).toHaveLength(0);
+
+        const wrong = await run(["ads:activate", "42", "--confirm-budget", "12", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(wrong.exitCode).not.toBe(0);
+        expect(wrong.stderr).toContain("Campaign 42 has a budget of 10 EUR per day, not 12. Nothing was started.");
+        expect(calls.map((c) => c.method)).toEqual(["GET"]);
+
+        const ok = await run(["ads:activate", "42", "--confirm-budget", "10", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(ok.exitCode).toBe(0);
+        expect(calls[2].method).toBe("POST");
+        expect(calls[2].path).toBe("/ads/campaigns/42/activate");
+        expect(calls[2].body).toEqual({ confirm_budget_amount: 10 });
+        expect(ok.stdout).toContain(
+          'About to confirm 10 EUR per day on campaign 42 (meta, "Boost: Summer launch post"). This starts real ad spend.'
+        );
+        expect(ok.stdout).toContain("Campaign started. It is in the network's ad review");
+        expect(ok.stdout).toContain("omnisocials ads:pause 42");
+
+        const raw = await run(["ads:activate", "42", "--confirm-budget", "10", "--json", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(raw.exitCode).toBe(0);
+        expect(JSON.parse(raw.stdout).data.status).toBe("pending_review");
+        expect(raw.stderr).toContain("About to confirm 10 EUR per day on campaign 42");
+      }
+    );
+  });
+
+  it("ads:activate-multi reads every campaign and prints the total before it starts them", async () => {
+    await withMockServer(
+      (req) => {
+        if (req.method === "GET") {
+          const id = Number(req.url.split("/").pop());
+          return { status: 200, json: { data: { ...AD_CAMPAIGN, id } } };
+        }
+        return {
+          status: 200,
+          json: {
+            results: [
+              { campaign_id: 41, ok: true, campaign: { ...AD_CAMPAIGN, id: 41, status: "pending_review" } },
+              { campaign_id: 43, ok: true, campaign: { ...AD_CAMPAIGN, id: 43, status: "pending_review" } },
+            ],
+          },
+        };
+      },
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:activate-multi",
+          "--ids",
+          "41,43",
+          "--confirm-budget",
+          "10",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls.map((c) => `${c.method} ${c.path}`)).toEqual([
+          "GET /ads/campaigns/41",
+          "GET /ads/campaigns/43",
+          "POST /ads/campaigns/activate-multi",
+        ]);
+        expect(calls[2].body).toEqual({ campaign_ids: [41, 43], confirm_budget_amount: 10 });
+        expect(stdout).toContain("About to confirm 10 on 2 campaigns:");
+        expect(stdout).toContain("Total: 20 EUR per day. This starts real ad spend on every one.");
+        expect(stdout).toContain("Started 2 of 2 campaigns.");
+      }
+    );
+  });
+
+  it("ads:update-campaign sends a budget raise with its confirmation and refuses a confirmation that does not match", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: { ...AD_CAMPAIGN, budget: { type: "daily", amount: 20, currency: "EUR" } } } }),
+      async (baseUrl, calls) => {
+        const wrong = await run([
+          "ads:update-campaign",
+          "42",
+          "--budget",
+          "20",
+          "--currency",
+          "EUR",
+          "--confirm-budget",
+          "15",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(wrong.exitCode).not.toBe(0);
+        expect(wrong.stderr).toContain("--confirm-budget 15 does not match --budget 20. Nothing was changed.");
+        expect(calls).toHaveLength(0);
+
+        const ok = await run([
+          "ads:update-campaign",
+          "42",
+          "--budget",
+          "20",
+          "--currency",
+          "EUR",
+          "--confirm-budget",
+          "20",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(ok.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/ads/campaigns/42");
+        expect(calls[0].body).toEqual({ budget: { amount: 20, currency: "EUR" }, confirm_budget_amount: 20 });
+        expect(ok.stdout).toContain("About to confirm the new budget of campaign 42: 20 EUR per day.");
+      }
+    );
+  });
+
+  it("a budget_confirmation_required answer says to ask the person and pass --confirm-budget", async () => {
+    await withMockServer(
+      () => ({
+        status: 400,
+        json: {
+          error: {
+            code: "budget_confirmation_required",
+            message: "Raising the budget of a running campaign needs confirmation: pass confirm_budget_amount equal to the new amount (20 EUR).",
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "ads:update-campaign",
+          "42",
+          "--budget",
+          "20",
+          "--currency",
+          "EUR",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [budget_confirmation_required]: Raising the budget of a running campaign needs confirmation");
+        expect(stderr).toContain("only after their OK run the command again with --confirm-budget <that amount>");
+      }
+    );
+  });
+
+  it("a 403 insufficient_scope prints the error and how to get a key with Ads", async () => {
+    await withMockServer(
+      () => ADS_SCOPE_ERROR,
+      async (baseUrl) => {
+        const { stderr, stdout, exitCode } = await run(["ads:campaigns", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [insufficient_scope]: This API key lacks the ads:read scope");
+        expect(stderr).toContain(
+          "This API key has no ads access. Create a new API key in OmniSocials (Settings > API) with Ads switched on: it adds the ads:read and ads:write scopes."
+        );
+        expect(stderr).toContain("omnisocials setup --api-key <new key>");
+        expect(stdout).toBe("");
+
+        const raw = await run(["ads:accounts", "--json", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(raw.exitCode).not.toBe(0);
+        expect(JSON.parse(raw.stdout)).toEqual(ADS_SCOPE_ERROR.json);
+        expect(raw.stderr).toContain("Create a new API key in OmniSocials (Settings > API) with Ads switched on");
+      }
+    );
+  });
+
+  it("ads:campaigns sends the filters and points to the next page", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: [AD_CAMPAIGN], pagination: { total: 3, limit: 1, offset: 0, has_more: true } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:campaigns",
+          "--status",
+          "draft",
+          "--platform",
+          "meta",
+          "--type",
+          "boost",
+          "--limit",
+          "1",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/ads/campaigns");
+        expect(Object.fromEntries(calls[0].query)).toEqual({ status: "draft", platform: "meta", campaign_type: "boost", limit: "1" });
+        expect(stdout).toContain("Ad campaigns (1 of 3)");
+        expect(stdout).toContain("#1  ID: 42");
+        expect(stdout).toContain("More: pass --offset 1 for the next page.");
+
+        const bad = await run(["ads:campaigns", "--status", "live", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("--status must be one of draft|pending_review|active|rejected|paused|completed|error");
+        expect(calls).toHaveLength(1);
+      }
+    );
+  });
+
+  it("ads:attach-account sends the network and account and says when the currency moved", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: { ...adDraft(), currency_changed: { platform: "meta", from: "USD", to: "EUR" } } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:attach-account",
+          AD_GROUP,
+          "--platform",
+          "meta",
+          "--ad-account-id",
+          "7",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe(`/ads/drafts/${AD_GROUP}/account`);
+        expect(calls[0].body).toEqual({ platform: "meta", ad_account_id: 7 });
+        expect(stdout).toContain("Ad account 7 attached to the meta network of the draft. Nothing spends until the draft is started.");
+        expect(stdout).toContain("The meta amount is now in EUR, the account's currency (it was USD).");
+      }
+    );
+  });
+
+  it("ads:capabilities prints the open networks and the state of each", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: {
+            networks: [
+              {
+                key: "meta",
+                label: "Meta",
+                runs_on: "Facebook and Instagram",
+                identity: "The Page of the ad account",
+                goals: { traffic: { ok: true }, video_views: { ok: true, needsVideo: true } },
+                text: { primary_text: { max: 2200 }, headline: { max: 40 } },
+                ctas: ["learn_more", "book_now"],
+                no_cta: false,
+                extra_fields: [],
+                min_daily_budget: { default: 1 },
+                review: "Usually within 24 hours",
+              },
+            ],
+            create_networks: ["meta", "pinterest"],
+            network_states: { meta: "live", pinterest: "live", tiktok: "coming_soon" },
+          },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["ads:capabilities", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/ads/capabilities");
+        expect(stdout).toContain("New ads can be made on: meta, pinterest");
+        expect(stdout).toContain("tiktok: coming soon");
+        expect(stdout).toContain("Meta (meta): Facebook and Instagram");
+        expect(stdout).toContain("Goals: traffic, video_views (video)");
+        expect(stdout).toContain("Text: primary 2200 characters, headline 40 characters");
+      }
+    );
+  });
+
+  it("ads:keywords sends the seed and prints the ideas", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: {
+            country: "US",
+            language: "en",
+            total: 1,
+            cached: false,
+            ideas: [
+              {
+                keyword: "social media scheduling tool",
+                avg_monthly_searches: 12100,
+                competition: "high",
+                competition_index: 87,
+                low_top_of_page_bid: 3.42,
+                high_top_of_page_bid: 11.8,
+              },
+            ],
+          },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "ads:keywords",
+          "--url",
+          "https://example.com",
+          "--keywords",
+          "social media scheduler",
+          "--country",
+          "us",
+          "--limit",
+          "50",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/ads/research/keywords");
+        expect(calls[0].body).toEqual({ keywords: ["social media scheduler"], url: "https://example.com", country: "US", limit: 50 });
+        expect(stdout).toContain(
+          "#1  social media scheduling tool: 12,100 searches a month, competition high (87), top-of-page bid 3.42 to 11.80"
+        );
       }
     );
   });

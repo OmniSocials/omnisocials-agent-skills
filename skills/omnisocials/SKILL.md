@@ -1,11 +1,11 @@
 ---
 name: omnisocials
-description: Manage social media across 13 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram channels and groups, Discord channels). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram and Facebook (and DM keyword automations on X), and configure webhooks via the OmniSocials API.
+description: Manage social media across 13 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram channels and groups, Discord channels). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram and Facebook (and DM keyword automations on X), boost posts and run ads on Meta, Pinterest, TikTok, LinkedIn, X and Google (drafts first, spend only after the person confirms the budget), and configure webhooks via the OmniSocials API.
 ---
 
 # OmniSocials Skill
 
-Create, schedule, and publish social media content across 13 platforms using OmniSocials.
+Create, schedule, and publish social media content across 13 platforms using OmniSocials, and boost posts or run ads on 6 ad networks.
 
 OmniSocials is a social media management tool that lets you schedule posts and track analytics across Instagram, Facebook, LinkedIn (personal profile + company page), YouTube, TikTok, X (Twitter), Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram (a channel or group, posted by the OmniSocials bot), and Discord (a channel, posted through its webhook).
 
@@ -58,6 +58,7 @@ IMPORTANT: Follow these rules at all times.
 7. **For bulk operations**, process one at a time and confirm between actions.
 8. **Read the approval review before you report on or change a post in review.** When a post shows `approval_status: "rejected"` or `"pending"` (post `status` `rejected` or `in_approval`), run `posts:approval <id>` first. It says who decided, the reason and what the reviewers wrote. Do not guess why a post was rejected or who it waits for, and do not edit, reschedule or recreate the post before you have read the review and told the user what it says.
 9. **A comment-to-DM automation sends DMs in the account's name.** Before you create one (`automations:create`, or `--dm-keywords` / `--dm-message` on a post), show the user the exact DM text and the keyword and get their confirmation; the DM goes to every person who comments the keyword, once each, and a sent DM cannot be taken back. NEVER use `--match any` (or `--dm-match any`), which answers every comment, unless the user asked for every comment. On X (`--platform x`) the automation answers the DMs people send the account (every first DM with `--match any`), OmniSocials adds "Reply STOP to stop automatic messages." under each answer, and a person who replies STOP gets no automatic DM from that account again. The Automations scopes are opt-in on the API key: a `403 insufficient_scope` means the user has to enable Automations on the key (Settings > API), not that the request was wrong.
+10. **Ads spend the user's real money. This rule is stronger than rule 1.** NEVER boost, make a campaign or make an ad draft unless the user stated the budget amount (with its currency) and how long it runs in this conversation: never invent, assume or default an amount. NEVER run `ads:activate`, `ads:activate-multi` or `ads:launch-draft` until you have shown the user the exact amount and currency (and for several campaigns or networks the TOTAL), and the user explicitly confirmed that amount; the `--confirm-budget` flag repeats the number the user confirmed, it is never filled in from the campaign data on your own. An earlier "boost this" or "set up an ad" is not a confirmation of an amount. Prefer drafts: they never spend, and for a new ad hand the user the `review_url`. See [Ads](#ads-boosts-and-new-ads-real-money) for the full rules.
 
 ## Common Actions
 
@@ -104,7 +105,17 @@ IMPORTANT: Follow these rules at all times.
 | "Why was my post rejected?" / "What did the reviewer say?" | `posts:list --status rejected` to find it, then `posts:approval <id>`: it prints who rejected it, on which step, the reason and the comment thread. Relay that to the user before you change anything. A rejected post will not publish; the user can edit and resubmit it in the dashboard (Edit & Resubmit on the post), or you create a corrected post with `posts:create ... --approval-workflow <id>` once the user agrees |
 | "Who is my post waiting on?" / "Why has it not gone out yet?" | `posts:approval <id>`: the "Waiting on" line names the current step and the approvers who still have to decide. A post that is still `in_approval` when its scheduled time passes does not publish; it publishes at once when it is approved late |
 | "I want to review posts before they go out" / "Send it to me for approval" | `approval-workflows:list` to find the workflow id, then `posts:create ... --schedule <ISO8601> --approval-workflow <id>`. The post lands as `in_approval`, the approvers are notified, and it publishes at the scheduled time once the last step approves (Approvals page in the dashboard, or `posts:approve`). If no workflow exists, tell the user to create one in the dashboard under Approvals |
+| "What should I boost?" | `ads:suggestions` (organic posts beating the workspace median; read-only). Then ask the user for the budget and how long it runs before `ads:boost` |
+| "Boost this post" | Safety rule 10. `ads:accounts` for the ad account id and its currency, ask the user for the budget and how long it runs, then `ads:boost --post-id <id> --ad-account-id <id> --budget <amount> --currency <ISO> --countries NL,BE --end <ISO8601>` (a draft, spends nothing). Show the budget; only after the user confirms that amount: `ads:activate <campaign-id> --confirm-budget <amount>`. TikTok needs `--spark-code`, Google `--headlines`, `--descriptions` and `--logo-url` |
+| "Boost it on Instagram and TikTok" / "on all my ad accounts" | `ads:boost-multi --post-id <id> --ad-account-ids <id,id> --budget <amount> --currency <ISO>`: one draft per account, the SAME budget on each, so the total is budget x accounts. Tell the user the TOTAL; after they confirm it: `ads:activate-multi --ids <campaign ids> --confirm-budget <amount>` |
+| "Make an ad with this picture" / "Run an ad on Meta and TikTok" | `ads:capabilities` (open networks, text limits, buttons), `ads:draft-defaults` (suggested countries and currency: confirm them with the user), `media:upload` for a public URL, then `ads:create-draft --platforms meta,tiktok=20 --objective traffic --budget <amount> --currency <ISO> --days <n> --countries <codes> --media-url <url> --primary-text "..." --link <url>`. Give the user the `review_url` it prints |
+| "Start my ad" | `ads:draft <group-id>`; show the user the networks, the daily amount of each with its currency, the days and the total. After their OK: `ads:attach-account <group-id> --platform <network> --ad-account-id <id>` where a network has no account, then `ads:launch-draft <group-id> --confirm-budget <amount>` (or `--confirm-budgets meta=10,tiktok=20` when the amounts differ) |
+| "Pause my ad" / "Stop the spend" | `ads:campaigns --status active` to find it, then `ads:pause <id>` (always safe, no confirmation needed). Each network of an ad draft is its own campaign |
+| "Raise the budget of my ad" | Show the new amount and currency; after the user's OK: `ads:update-campaign <id> --budget <new> --currency <ISO> --confirm-budget <new>`. Lowering it needs no `--confirm-budget` |
+| "How are my ads doing?" | `ads:overview` (totals), `ads:campaigns`, `ads:campaign <id>` (spend, impressions, clicks, ctr) |
+| "Find keywords for a Google ad" | `ads:keywords --url "https://..." --country US` (ideas with searches, competition and bid range), then `ads:keyword-metrics --keywords "a,b"` for a shortlist. Read-only and free |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
+| "Tell my system when an ad is approved or rejected" | `webhooks:create --url "https://..." --events ad.status_changed` (fires on every status change of an ad campaign, e.g. `pending_review` to `active` or `rejected`) |
 | "Tell my system when a post is approved or rejected" | `webhooks:create --url "https://..." --events post.approved,post.rejected` |
 
 ## Workflow
@@ -259,12 +270,94 @@ Read and reply to DMs, comments, and mentions across connected accounts. Every c
 | `inbox:like <message-id>` | Like a comment someone left on one of the user's posts, as the connected Page/account (`--unlike` removes the like). Facebook Page, LinkedIn Page and TikTok comments, incoming only. Facebook allows only Like: no Love or other reactions. Liking a comment that is already liked (or unliking one that is not) succeeds. Takes the message `id` from `inbox:messages` or `inbox:next`, NOT the conversation id. The response is the comment after the change: `liked` is `true` when the connected account liked it, `false` when not, `null` on platforms without a like through OmniSocials (DMs, Instagram, YouTube, X, Threads). `inbox:messages` marks a liked comment `liked`, and `inbox:next` names `inbox:like` on a comment that can be liked. Errors: 400 `unsupported_platform` (not an incoming Facebook, LinkedIn Page or TikTok comment), 403 `reconnect_required` (Facebook was connected without the comment-moderation permission; reconnect it in the dashboard), 401 `reauth_required`, 404 `not_found` / `account_not_connected`, 502 `platform_error`. Requires `inbox:write`. |
 | `inbox:delete <message-id>` | Delete a comment from the platform for good. Facebook, Instagram and TikTok comments only (YouTube: use `inbox:hide` instead). Cannot be undone, so confirm with the user first. Replies under the comment go with it; the response lists them as `removed_reply_ids`. Takes the message `id`, NOT the conversation id. Same error codes as `inbox:hide`. Requires `inbox:write`. |
 
+### Ads (boosts and new ads: real money)
+
+Boost a post the user already published, or make a new ad with its own picture or video, text, headline, button and link, on the ad networks **Meta** (Facebook and Instagram), **Pinterest**, **TikTok**, **LinkedIn** (company page posts only), **X** and **Google** (boosts promote YouTube videos only). **The scopes are opt-in**: the API key needs Ads switched on when it is made (Settings > API: adds `ads:read` and `ads:write`; an existing key cannot get them, so the user makes a new key and saves it with `setup --api-key <new key>`). The user behind the key also needs the `access_ads` permission to read and `manage_ads` to make, start or change anything. Ad accounts are connected and selected for spending in the OmniSocials web app only, one per network per workspace; `ads:accounts` lists them with their currency, whether they are selected, and whether the network has a payment method. Amounts are in MAJOR currency units (`10` = 10 EUR), in the ad account's currency, and each network has a lowest daily amount (TikTok 20).
+
+**A network can be coming soon.** `ads:capabilities` prints `create_networks` (the networks open to the user's organisation on this server) and `network_states` per network: `live`, `preview` (open to this organisation ahead of the rest) or `coming_soon`. On a network that is coming soon nobody can connect, boost, make a new ad, start, resume or raise a budget (the API answers `ads_network_coming_soon`), but campaigns that already run there can still be paused and deleted. Check it before you offer a network.
+
+**Money-safety rules for agents (stronger than every other rule in this skill):**
+
+1. **Never invent a budget.** Boost, make a campaign or make an ad draft only when the user stated the amount, its currency and how long it runs in this conversation. Never use a default, a suggestion or an amount from an earlier ad.
+2. **Drafts first.** `ads:boost`, `ads:boost-multi`, `ads:create-campaign` and `ads:create-draft` only make drafts: nothing exists on the ad network and nothing spends. The CLI says so in its output. A new ad is best handed over as its `review_url`: the user sees the ad per placement, connects the ad account and starts it in OmniSocials.
+3. **Three commands start spend:** `ads:activate`, `ads:activate-multi` and `ads:launch-draft`. Each refuses before any request without `--confirm-budget` (a draft also takes `--confirm-budgets` per network). Run one only after you showed the user the exact amount and currency, and for several campaigns or networks the TOTAL (amount x campaigns, or daily amount x days x networks), and the user explicitly confirmed it. `--confirm-budget` repeats the number the user confirmed; never fill it in from the campaign data on your own, and never treat "boost this" or "set up an ad" as a confirmation of an amount.
+4. **The CLI checks the amount before it sends it.** These three commands read the campaigns or the draft first, print `About to confirm ...` with the amount, the currency and the total, and refuse (nothing sent) when the confirmed amount is not the budget of what would start. Relay that line to the user. With `--json` it goes to stderr.
+5. **A budget raise is new spend.** Raising the budget of a campaign that runs (`ads:update-campaign <id> --budget <new>`) needs `--confirm-budget <new>` after the user confirmed the new amount; without it the API answers `budget_confirmation_required` and changes nothing. Lowering it, or changing a draft, needs no confirmation.
+6. **Resuming restarts spend.** Confirm `ads:resume` with the user and name the budget that resumes. `ads:pause` is always safe. `ads:delete-campaign` cannot be undone: confirm it first.
+
+**Boost flow** (a post that is already published):
+
+1. `ads:suggestions` when the user asks what to boost (posts beating the workspace median), else the post the user names (`posts:list` for its id).
+2. `ads:accounts`: the ad account id per network and its currency. No account: the user connects and selects one in the web app.
+3. Ask the user for the budget (daily or lifetime), the currency of that account, how long it runs and the countries.
+4. `ads:boost --post-id <id> --ad-account-id <id> --budget <amount> --currency <ISO> --countries NL,BE --end <ISO8601>` makes the draft. Several networks at once: `ads:boost-multi --ad-account-ids <id,id>` (one draft per account, the same budget on each; the CLI prints the total). TikTok boosts run as Spark Ads and need `--spark-code` (the post owner makes it in the TikTok app: video > "..." > Ad settings > Ad authorization > Generate code); a TikTok traffic boost also needs `--link`. Google boosts need `--headlines` (1-5, 40 characters each), `--descriptions` (1-5, 90 characters each) and `--logo-url` (a square logo).
+5. Show the user the draft and its budget. After their explicit OK on that amount: `ads:activate <campaign-id> --confirm-budget <amount>` (or `ads:activate-multi --ids <id,id> --confirm-budget <amount>` after they confirmed the TOTAL). The campaign goes to `pending_review` and spends once the network approves it, usually within 24 hours.
+
+**Create an ad flow** (a new ad with its own picture or video):
+
+1. `ads:capabilities`: which networks are open (`create_networks`, `network_states`), each network's goals, text limits (TikTok 100 characters without emoji, Google headlines 30), buttons, extra fields (Google: business name and a square logo) and lowest daily amount.
+2. `ads:draft-defaults`: suggested countries (where the Instagram followers are) and currency. Show them to the user; use them only after they agree.
+3. Put the picture or video at a public https URL (`media:upload`, then the returned URL).
+4. `ads:create-draft --platforms meta,tiktok=20 --objective traffic --budget 10 --currency EUR --days 14 --countries NL,BE --media-url <url> --primary-text "..." --headline "..." --cta learn_more --link <url>` makes one draft campaign per network with the same ad. The CLI refuses a draft without the networks, a goal, the amount with its currency, the run time (`--days` or `--no-end`), countries or a complete ad. Two to six ads, or a body you already have: `--draft-json '<json>'` or `--draft-file <path>` (the flags go over it). It prints per network the daily amount, the ad account and what still stops it (`readiness`), and the `review_url`.
+5. **Hand the user the `review_url`.** That is the safest hand-off. Only when the user asks you to start it here: `ads:attach-account <group-id> --platform <network> --ad-account-id <id>` for each network without an account (the amount moves to the account's currency; the CLI says so), show the user the networks, the daily amount of each with its currency, the days and the total, and after their explicit OK `ads:launch-draft <group-id> --confirm-budget <amount>`. When the networks have different amounts (TikTok at its minimum of 20): `--confirm-budgets meta=10,tiktok=20`. A network that is not ready (no ad account, an ad that breaks a rule) does not start and spends nothing; the others start.
+6. To change a draft: `ads:update-draft <group-id>` replaces the WHOLE draft. The easy way: `ads:draft <group-id> --json > draft.json`, change the file, `ads:update-draft <group-id> --draft-file draft.json` (keep each ad's `key`). A network that started is changed with `ads:update-campaign` instead.
+
+| Command | Description |
+|---|---|
+| `ads:accounts` | The connected ad accounts: id (the `--ad-account-id`), network, name, currency, selected for spending, status, a missing payment method, a needed reconnect; then the ad networks on this server (`platforms_available`). Needs `ads:read` |
+| `ads:campaigns` | List campaigns: id, name, network, type (`campaign` or `boost`), status, budget, results. Flags: `--status draft\|pending_review\|active\|rejected\|paused\|completed\|error`, `--platform meta\|pinterest\|tiktok\|linkedin\|x\|google`, `--type campaign\|boost`, `--limit <1-100>` (default 25), `--offset`. Prints `--offset` for the next page. Deleted campaigns are never listed |
+| `ads:campaign <id>` | One campaign: budget, status, goal, schedule, the latest spend, impressions, clicks and ctr, the network's campaign id, an error from the network, and the targeting |
+| `ads:suggestions` | Organic posts from the last 14 days that earn at least 2x the workspace median on a network that is open, never boosted, max 5: post id, network, why. Read-only |
+| `ads:overview` | Connected ad accounts, campaigns by status, total spend, impressions and clicks (a deleted campaign that spent stays in the totals) |
+| `ads:boost` | Boost a published post as a DRAFT. Required: `--post-id` (the OmniSocials post id), `--ad-account-id`, `--budget <amount>`, `--currency <ISO>`. Optional: `--budget-type daily\|lifetime` (daily by default; lifetime usually needs `--end`), `--objective engagement\|traffic\|awareness\|video_views\|lead_generation\|conversions` (engagement by default), `--name`, `--start` / `--end` (ISO 8601), `--countries NL,BE` (Meta needs countries), `--targeting '<json>'` (the targeting object; `--countries` goes over it), `--spark-code` (TikTok, required there), `--link` (TikTok traffic boosts, required there), `--headlines`, `--descriptions`, `--logo-url` (Google, required there; repeat `--headlines` for a text with a comma), `--long-headlines`, `--business-name`, `--landing-page-url`, `--creative-json '<json>'` (the whole `creative` object). Prints the start command with the amount to confirm. Needs `ads:write` |
+| `ads:boost-multi` | Boost ONE post on up to 10 ad accounts in one call: one draft per account, a result per account (one failing never stops the others). Required: `--post-id`, `--ad-account-ids <id,id>`, `--budget`, `--currency`; the other `ads:boost` flags apply to every account. The same budget goes on each, so the CLI prints the total (budget x accounts) and the `ads:activate-multi` command |
+| `ads:create-campaign` | A DRAFT campaign without ads (`--ad-account-id`, `--name`, `--budget`, `--currency`, plus the optional `ads:boost` campaign flags). It cannot start (`campaign_has_no_ads`): a new ad is `ads:create-draft` |
+| `ads:update-campaign <id>` | Change only what you pass: `--name`, `--budget <amount>` with `--currency` (and `--budget-type`), `--start`, `--end`, `--countries`, `--targeting`. `--confirm-budget <new amount>` is required to RAISE the budget of a campaign that runs (live, in review or paused) and must equal `--budget`; the CLI prints the new amount before it sends it |
+| `ads:activate <id>` | **Starts real ad spend.** `--confirm-budget <amount>` is required and must equal the campaign's budget. Reads the campaign first, prints `About to confirm <amount> <currency> per day on campaign <id>`, and refuses a mismatch without sending anything. Also starts a paused campaign again. A campaign of an ad draft starts with `ads:launch-draft` instead (`use_draft_launch`) |
+| `ads:activate-multi` | **Starts real ad spend on up to 10 campaigns.** `--ids <id,id>` and `--confirm-budget <amount>` (required, must equal every campaign's budget). Reads every campaign first, prints each with its currency and the total per currency, and refuses (nothing sent) when one budget differs. Prints a result per campaign |
+| `ads:pause <id>` | Pause a campaign: spend stops. Always safe |
+| `ads:resume <id>` | Resume a paused campaign: spend starts again at its budget. Confirm with the user first |
+| `ads:delete-campaign <id>` | Delete a campaign, on the ad network too (one that runs stops). Cannot be undone: confirm first. A campaign that spent keeps its spend in `ads:overview` |
+| `ads:capabilities` | What each network accepts for a new ad (goals, text limits, buttons, extra fields, lowest daily amount, shortest run, review time), `create_networks` and `network_states`. `--json` has every rule (media sizes and lengths). Read it before `ads:create-draft` |
+| `ads:draft-defaults` | Suggested countries (the top Instagram follower countries, else the user's timezone country) and currency (the selected Meta ad account, else the country's). Suggestions only: confirm them with the user |
+| `ads:create-draft` | A NEW ad as a DRAFT on one or more networks: one campaign per network, the same ads. Nothing spends; no ad account needed. Body from `--draft-json '<json>'` or `--draft-file <path>` and/or the flags below. Prints the draft, per network what still stops it, and the `review_url`. Needs `ads:write` |
+| `ads:draft <group-id>` | A draft: goal, run time, countries, audience, the ads, per network the daily amount, the ad account and what still stops it (`ready` or `not ready: ...`), and the `review_url` |
+| `ads:update-draft <group-id>` | Replace the WHOLE draft (PUT): same body and flags as `ads:create-draft`. The output of `ads:draft <group-id> --json` works as `--draft-file` (the CLI takes the networks and their amounts from its campaigns); keep each ad's `key`. A network that started is never changed here |
+| `ads:delete-draft <group-id>` | Delete a draft that has not started (nothing exists on any network) |
+| `ads:attach-account <group-id>` | `--platform <network> --ad-account-id <id>`: use a connected, selected ad account for one network of a draft. The amount moves to the account's currency; the CLI says when it did |
+| `ads:launch-draft <group-id>` | **Starts real ad spend** on every ready network of the draft. `--confirm-budget <daily amount>` (one amount for every network) or `--confirm-budgets meta=10,tiktok=20` (per network, or per campaign id: `51=10`). Reads the draft first, prints the plan (per network the daily amount, currency and account, or why it does not start) and the total (daily amount x days x networks, per currency), and refuses (nothing sent) when a ready network has no confirmed amount or another one. Without any confirmation it refuses before any request. Prints a result per network |
+| `ads:keywords` | Google keyword ideas with monthly searches, competition and the top-of-page bid range, from a seed: `--keywords "a,b"` (up to 20) and/or `--url <page>`. `--country` (default US), `--language` (default en), `--limit <1-500>` (default 100), `--ad-account-id` (only with several Google Ads accounts). Read-only, free, cached 24 hours |
+| `ads:keyword-metrics` | Exact Google metrics for your own list: `--keywords "a,b"` (1-200, required), `--country`, `--language`, `--ad-account-id`. Adds the close variants |
+
+**Draft flags** (`ads:create-draft`, `ads:update-draft`; they go over the same fields of `--draft-json` / `--draft-file`):
+
+| Flag | Description |
+|---|---|
+| `--platforms <a,b>` | Networks: `meta`, `pinterest`, `tiktok`, `linkedin`, `x`, `google`. `tiktok=20` gives one network its own daily amount (TikTok's minimum is 20) |
+| `--objective <goal>` | `traffic` (website visits), `engagement`, `awareness` or `video_views` |
+| `--budget <amount>` | Daily amount PER NETWORK in major units. The user must have said it |
+| `--currency <ISO>` | Currency; it moves to the ad account's currency once an account is attached |
+| `--days <1-90>` / `--no-end` | How long the ad runs after it starts; one of the two is required. `--no-end` = it spends until it is stopped: only when the user asked for no end date |
+| `--countries <a,b>` | ISO country codes |
+| `--age-min`, `--age-max`, `--genders male\|female` | Limit the audience (13 to 65, 65 = 65+; one gender). Turns the network's automatic audience off |
+| `--placements automatic\|feeds` | Meta only: automatic (feeds, Stories, Reels) or feeds only |
+| `--name "<name>"` | Campaign name |
+| `--media-url <url>` | The ad's one picture or video, a public https URL. `--media-type image\|video` when the file name does not say it. `--width`, `--height` (pixels, so each network can check the shape), `--duration` (video seconds), `--thumbnail-url` (video cover: Meta, Pinterest and TikTok need one) |
+| `--primary-text "<text>"` | The ad text (required). `--primary-text-b "<text>"`: a second text to test against the first; it runs as a second ad with the same picture |
+| `--headline`, `--description`, `--cta <button>`, `--link <url>` | `--link` (the website) is required. Buttons: `learn_more`, `shop_now`, `sign_up`, `book_now`, `contact_us`, `order_now`, `get_offer`, `get_quote`, `subscribe`, `apply_now`, `download`, `watch_more`; a network without that button shows its closest one |
+| `--overrides-json '<json>'` | Text per network where the base does not fit: `{"google":{"headline":"Autumn trips, 3 spots"}}` |
+| `--google-business-name`, `--google-logo-url` | Google only, required there: the business name (25 characters) and a square logo (128 px or larger) |
+| `--stories-reels-url <url>` | Meta only, optional: a second, upright 9:16 file (1080 x 1920) for Stories and Reels, the same kind as `--media-url` (a picture with a picture, a video with a video). Meta shows it in Stories and Reels and the main file everywhere else; without it Meta fits the main file. Not for the `engagement` goal; ignored with `--placements feeds`. `--stories-reels-width`, `--stories-reels-height`, `--stories-reels-thumbnail-url` (cover of a video). Sent as `placement_media.stories_reels` |
+| `--ad-name`, `--ad-key` | The ad's name, and its `key` to keep that ad on `ads:update-draft` |
+
+The ad flags describe ONE ad. On `ads:update-draft` with a body that has one ad they change that ad; for two or more ads, change them in the JSON.
+
 ### Webhooks
 
 | Command | Description |
 |---|---|
 | `webhooks:list` | List all webhooks |
-| `webhooks:create` | Create a webhook. Flags: `--url` (required), `--events` (required, comma-separated: `post.scheduled`, `post.published`, `post.failed`, `post.approved`, `post.rejected`). `post.approved` fires when the last step of a post's approval workflow is approved (the post moves to `scheduled`, or `posting` when its time has passed); `post.rejected` fires when an approver rejects a post. Both carry `data.approval` (`status`, `decided_by` = the approver's user id, `reason` = string or null) and an empty `targets` array; the full review is in `posts:approval <id>` |
+| `webhooks:create` | Create a webhook. Flags: `--url` (required), `--events` (required, comma-separated: `post.scheduled`, `post.published`, `post.failed`, `post.approved`, `post.rejected`, `ad.status_changed`). `post.approved` fires when the last step of a post's approval workflow is approved (the post moves to `scheduled`, or `posting` when its time has passed); `post.rejected` fires when an approver rejects a post. Both carry `data.approval` (`status`, `decided_by` = the approver's user id, `reason` = string or null) and an empty `targets` array; the full review is in `posts:approval <id>`. `ad.status_changed` fires on every status change of an ad campaign (`pending_review` to `active`, or to `rejected`); its `data` is the campaign: `campaign_id`, `name`, `platform`, `campaign_type`, `status`, `previous_status`, `external_campaign_id`, `budget` |
 | `webhooks:get <id>` | Get webhook details |
 | `webhooks:update <id>` | Update webhook. Flags: `--url`, `--events`, `--active true\|false` |
 | `webhooks:delete <id>` | Delete a webhook |
@@ -771,6 +864,47 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 ./scripts/omnisocials.js webhooks:create --url "https://yoursite.com/webhook" --events post.published,post.failed
 ```
 
+### Boost a post (a draft first, spend only after the user confirms)
+```
+# The ad account id and its currency
+./scripts/omnisocials.js ads:accounts
+# The draft: spends nothing. Budget, currency, countries and end come from the user
+./scripts/omnisocials.js ads:boost --post-id 12345 --ad-account-id 7 --budget 10 --currency EUR --countries NL,BE --end 2026-12-01T00:00:00Z
+# Prints: Boost draft created. No money is spent: nothing exists on the ad network yet. ... ID: 42 ... Budget: 10 EUR per day
+# Show the user "10 EUR per day until 1 December". Only after they confirm that amount:
+./scripts/omnisocials.js ads:activate 42 --confirm-budget 10
+# Prints: About to confirm 10 EUR per day on campaign 42 (meta, "Boost: ..."). This starts real ad spend.
+# then: Campaign started. It is in the network's ad review: spend begins once the network approves it
+# Stop the spend any time
+./scripts/omnisocials.js ads:pause 42
+```
+
+### Make a new ad and hand it over (or start it when the user asks)
+```
+# What is open, and the limits per network
+./scripts/omnisocials.js ads:capabilities
+# Suggested countries and currency: show them to the user, use them only after they agree
+./scripts/omnisocials.js ads:draft-defaults
+# The draft on Meta and TikTok (TikTok's minimum is 20 a day). A second upright 9:16 video for
+# Meta's Stories and Reels is optional
+./scripts/omnisocials.js ads:create-draft --name "Autumn trips" --platforms meta,tiktok=20 --objective traffic --budget 10 --currency EUR --days 14 --countries NL,BE --media-url "https://cdn.example.com/trip.mp4" --thumbnail-url "https://cdn.example.com/trip-cover.jpg" --stories-reels-url "https://cdn.example.com/trip-9x16.mp4" --primary-text "Five days in the valley, guided hikes and a canoe day." --headline "Autumn trips" --cta book_now --link "https://example.com/autumn"
+# Prints the draft, per network what still stops it, and: Review and start it in OmniSocials: https://app.omnisocials.com/ads/create/<group-id>
+# Give the user that link. Only when they ask you to start it here:
+./scripts/omnisocials.js ads:attach-account <group-id> --platform meta --ad-account-id 7
+./scripts/omnisocials.js ads:attach-account <group-id> --platform tiktok --ad-account-id 9
+./scripts/omnisocials.js ads:draft <group-id>
+# Show the user: meta 10 EUR a day, tiktok 20 EUR a day, 14 days, 420 EUR in total. After their OK:
+./scripts/omnisocials.js ads:launch-draft <group-id> --confirm-budgets meta=10,tiktok=20
+# Prints the plan and the total first. A network that is not ready does not start and spends nothing
+```
+
+### Change a draft
+```
+./scripts/omnisocials.js ads:draft <group-id> --json > draft.json
+# Edit draft.json (keep each ad's "key"), or put the change in a flag over it
+./scripts/omnisocials.js ads:update-draft <group-id> --draft-file draft.json --primary-text "Autumn in the mountains: 3 spots left."
+```
+
 ### Setup (interactive)
 ```
 ./scripts/omnisocials.js setup
@@ -789,7 +923,7 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 |---|---|---|
 | `API key not found` | No API key configured | Run `setup` or set `OMNISOCIALS_API_KEY` |
 | `unauthorized` / `invalid_api_key` | Invalid or expired API key | Check key at Settings > API |
-| `insufficient_scope` | API key missing required scope | Create a new key with needed scopes. On `automations:*` or the `--dm-*` post flags: Automations is opt-in on the key, enable it under Settings > API (adds `automations:read` and `automations:write`) |
+| `insufficient_scope` | API key missing required scope | Create a new key with needed scopes. On `automations:*` or the `--dm-*` post flags: Automations is opt-in on the key, enable it under Settings > API (adds `automations:read` and `automations:write`). On `ads:*`: Ads is opt-in, the user makes a new key with Ads switched on (adds `ads:read` and `ads:write`; an existing key cannot get them) and saves it with `setup --api-key <new key>` |
 | `rate_limit_exceeded` | Too many requests (100/min limit) | Wait and retry after the reset time |
 | `validation_error` | Missing required fields or invalid data | Check required media/fields for the platform |
 | `not_found` | Resource doesn't exist | Verify the ID is correct |
@@ -804,6 +938,21 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 | `x_dms_off` | An active X automation (create, or `--resume`) while X DMs are off for the workspace | Ask the user to turn on X DMs in the OmniSocials dashboard (Social Inbox, X DMs card, or the automation editor), or create it with `--paused` and resume it later |
 | `x_not_connected` | `automations:create --platform x` on a workspace without an X account | Ask the user to connect X in the dashboard |
 | `instagram_not_connected` / `instagram_needs_reauth` | No Instagram account in the workspace, or its connection expired | Ask the user to connect or reconnect Instagram in the dashboard |
+
+Ads errors (`ads:*`):
+
+| Error | Cause | Fix |
+|---|---|---|
+| `budget_confirmation_required` | Start, launch or budget raise without `--confirm-budget`, or with another amount than the campaign's. Nothing was started or changed | Show the user the exact amount and currency; after their OK run it again with that amount |
+| `use_draft_launch` | `ads:activate` on a campaign of an ad draft | Start it with `ads:launch-draft <group-id>` (the group id is in the message) |
+| `campaign_has_no_ads` | A campaign from `ads:create-campaign` has no ads | Make a new ad with `ads:create-draft` |
+| `ads_network_coming_soon` | The network is not open to the organisation yet | Check `network_states` with `ads:capabilities`; pick an open network |
+| `not_editable` | The draft (or that network of it) has started | Change the campaign with `ads:update-campaign`, or pause it |
+| `ad_account_not_selected` / `ad_account_needs_reauth` | The ad account is not selected for spending, or its connection expired | The user selects or reconnects it in the OmniSocials web app (not possible through the API) |
+| `invalid_budget` | Below the network's minimum (TikTok 20 a day), not the ad account's currency, or not an amount | Use major units, the account's currency and the network's minimum |
+| `post_not_published` / `post_not_boostable` | A boost of a post that is not live, or of a type or network that cannot be boosted (LinkedIn: company page posts only; Google: YouTube videos only) | Boost a published post on a network that supports it |
+| `linkedin_political_declaration_required` | A LinkedIn ad aimed at the EU needs LinkedIn's political ads statement | Show the user the statement; with their OK put `"political_intent": "NOT_POLITICAL"` in the draft's `targeting` (`--draft-json`) |
+| `insufficient_permission` / `permission_denied` | The user behind the key lacks `access_ads` (reads) or `manage_ads` (anything that can spend) | A workspace admin gives the permission under Settings > Roles |
 
 ### Rate Limits
 
@@ -820,6 +969,7 @@ The API allows 100 requests per minute per API key. Response headers include:
 - **Pinterest boards**: Run `accounts:get <pinterest_id>` to see available boards and their IDs
 - **Pinterest product tags**: Run `pinterest:products` to get product Pin IDs for `--pinterest-product-tags` (max 24, own product Pins only)
 - **Comment to DM**: an automation made with a post (`--dm-keywords` + `--dm-message`) starts once the post is live on its channel (Instagram, or Facebook with `--dm-platforms`); `automations:events <id>` shows every comment it answered or skipped. X automations (`automations:create --platform x`) answer DMs only, never a post
+- **Ads**: everything starts as a draft that spends nothing. Spend starts only with `ads:activate`, `ads:activate-multi` or `ads:launch-draft` and the `--confirm-budget` the user confirmed; the CLI prints the amount, currency and total first. For a new ad the `review_url` is the best hand-off. `ads:pause` is always safe
 - **Scheduling**: Use ISO 8601 format for dates (e.g., `2026-04-10T14:00:00Z`)
 - **Media upload**: Supports JPEG, PNG, GIF, WebP images, MP4, MOV, AVI videos and PDFs (100 MB per upload; up to 1 GB from a public URL with `media:upload`)
 - **Draft first**: When unsure, create as draft (no `--schedule`), review, then publish with `posts:publish`. To propose a time without publishing, use `--schedule` with `--draft` (a planned draft) and let the user confirm with `posts:update <id> --no-draft`

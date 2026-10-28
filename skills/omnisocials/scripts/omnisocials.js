@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.36.0";
+const VERSION = "1.37.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -138,9 +138,16 @@ async function apiRequest(config, method, apiPath, body, queryParams) {
 
 // Flags that may be given more than once. Their values are collected in an
 // array in the order given (one public-reply variation per --reply, one link
-// button per --discord-button). Every other flag keeps its last value when
-// repeated.
-const REPEATABLE_FLAGS = new Set(["reply", "dm-reply", "discord-button"]);
+// button per --discord-button, one Google text per --headlines). Every other
+// flag keeps its last value when repeated.
+const REPEATABLE_FLAGS = new Set([
+  "reply",
+  "dm-reply",
+  "discord-button",
+  "headlines",
+  "descriptions",
+  "long-headlines",
+]);
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -980,6 +987,500 @@ function buildPostBody(flags) {
   return body;
 }
 
+// ─── Ads ────────────────────────────────────────────────────────────────────
+
+// Ads spend REAL money. ads:boost, ads:boost-multi, ads:create-campaign and
+// ads:create-draft only ever make DRAFTS: nothing exists on the ad network
+// and nothing can spend. Three commands start spend: ads:activate,
+// ads:activate-multi and ads:launch-draft. Each needs --confirm-budget (a
+// draft also takes --confirm-budgets per network) and refuses before any
+// request without it, reads the campaigns first, prints the amount and
+// currency it is about to confirm, and refuses when that amount is not what
+// would start. Raising the budget of a campaign that runs needs
+// --confirm-budget on ads:update-campaign. The CLI never fills in a
+// confirmation itself. Amounts are in MAJOR currency units (10 = 10 EUR) in
+// the ad account's currency. Ad accounts are connected and selected in the
+// web app only. The ads:read / ads:write scopes are opt-in on the API key,
+// and the user behind the key needs access_ads (reads) or manage_ads.
+const AD_NETWORKS = ["meta", "pinterest", "tiktok", "linkedin", "x", "google"];
+const AD_CAMPAIGN_STATUSES = ["draft", "pending_review", "active", "rejected", "paused", "completed", "error"];
+const AD_CAMPAIGN_TYPES = ["campaign", "boost"];
+const AD_OBJECTIVES = ["engagement", "traffic", "awareness", "video_views", "lead_generation", "conversions"];
+// A new ad (ads:create-draft) takes fewer goals than a boost or a campaign.
+const AD_DRAFT_OBJECTIVES = ["traffic", "engagement", "awareness", "video_views"];
+const AD_BUDGET_TYPES = ["daily", "lifetime"];
+const AD_CTAS = [
+  "learn_more",
+  "shop_now",
+  "sign_up",
+  "book_now",
+  "contact_us",
+  "order_now",
+  "get_offer",
+  "get_quote",
+  "subscribe",
+  "apply_now",
+  "download",
+  "watch_more",
+];
+const AD_MEDIA_TYPES = ["image", "video"];
+const AD_PLACEMENTS = ["automatic", "feeds"];
+const AD_GENDERS = ["male", "female"];
+// boost-multi takes up to 10 ad accounts, activate-multi up to 10 campaigns.
+const MAX_AD_TARGETS = 10;
+const MAX_ADS_PER_DRAFT = 6;
+const MAX_AD_DRAFT_DAYS = 90;
+const ADS_SCOPE_HINT =
+  "This API key has no ads access. Create a new API key in OmniSocials (Settings > API) with Ads switched on: it adds the ads:read and ads:write scopes. The scopes of an existing key cannot be changed, so save the new key with: omnisocials setup --api-key <new key>";
+// What to do about an ads error, printed under it (also with --json). The
+// API lower-cases every ads error code.
+const ADS_ERROR_HINTS = {
+  insufficient_scope: ADS_SCOPE_HINT,
+  insufficient_permission:
+    "The user behind this API key needs the access_ads permission to read ads and manage_ads to make, start or change them. A workspace admin gives it under Settings > Roles.",
+  permission_denied:
+    "The user behind this API key needs the manage_ads permission. A workspace admin gives it under Settings > Roles.",
+  budget_confirmation_required:
+    "Nothing was started or changed. Show the person the exact amount and currency, and only after their OK run the command again with --confirm-budget <that amount>.",
+  use_draft_launch:
+    "This campaign belongs to an ad draft: start it with ads:launch-draft <group-id> (the group id is in the message above).",
+  campaign_has_no_ads:
+    "A campaign from ads:create-campaign has no ads and cannot start. Make a new ad with ads:create-draft.",
+  ads_network_coming_soon:
+    "This ad network is not open to your organisation yet. ads:capabilities lists network_states per network.",
+  ad_account_not_selected:
+    "Select the ad account for spending in the OmniSocials web app. Ad accounts cannot be connected or selected through the API.",
+  ad_account_needs_reauth: "Reconnect the ad account in the OmniSocials web app, then try again.",
+  not_editable: "This draft (or that network of it) has started. Change the campaign itself with ads:update-campaign.",
+};
+
+// --budget 10 / --confirm-budget 10: an amount above zero in MAJOR currency
+// units. A bare flag or anything else is a CLI error, never a default.
+function parseAdAmount(flag, value) {
+  const n = value === true ? NaN : Number(String(value).trim());
+  if (!Number.isFinite(n) || n <= 0) {
+    exitWithError(
+      `${flag} needs an amount above 0 in major currency units (10 = 10 EUR)${value === true ? "" : ` (got "${value}")`}`
+    );
+  }
+  return n;
+}
+
+// --post-id 12345 / --ad-account-id 7: a numeric id, sent as a number.
+function parseAdId(flag, value) {
+  const n = value === true ? NaN : Number(String(value).trim());
+  if (!Number.isInteger(n) || n < 1) {
+    exitWithError(`${flag} must be a numeric id${value === true ? "" : ` (got "${value}")`}`);
+  }
+  return n;
+}
+
+// --ids 41,42 / --ad-account-ids 7,9: up to 10 numeric ids.
+function parseAdIdList(flag, value) {
+  const parts = splitComma(value === true ? "" : String(value));
+  if (!parts || !parts.length) exitWithError(`${flag} takes a comma list of numeric ids, e.g. ${flag} 41,42`);
+  if (parts.length > MAX_AD_TARGETS) {
+    exitWithError(`${flag} takes at most ${MAX_AD_TARGETS} ids per call (got ${parts.length})`);
+  }
+  return parts.map((p) => parseAdId(flag, p));
+}
+
+// --currency eur: a 3-letter code, sent upper case.
+function parseCurrency(flag, value) {
+  const v = requireValue(flag, value).toUpperCase();
+  if (!/^[A-Z]{3}$/.test(v)) exitWithError(`${flag} must be a 3-letter currency code, e.g. EUR (got "${v}")`);
+  return v;
+}
+
+// --countries nl,be: 2-letter country codes, sent upper case.
+function parseCountries(flag, value) {
+  const list = splitComma(value === true ? "" : String(value));
+  if (!list || !list.length) exitWithError(`${flag} takes a comma list of country codes, e.g. ${flag} NL,BE`);
+  const codes = list.map((c) => c.toUpperCase());
+  const bad = codes.find((c) => !/^[A-Z]{2}$/.test(c));
+  if (bad) exitWithError(`${flag}: "${bad}" is not a 2-letter country code`);
+  return codes;
+}
+
+// --start / --end: a time Date.parse understands, sent as given.
+function parseAdTime(flag, value) {
+  const v = requireValue(flag, value);
+  if (Number.isNaN(Date.parse(v))) exitWithError(`${flag} must be an ISO 8601 time, e.g. 2026-12-01T00:00:00Z`);
+  return v;
+}
+
+// A whole number within a range (--days, --limit, --width, --age-min).
+function parseAdInt(flag, value, min, max) {
+  const n = value === true ? NaN : Number(String(value).trim());
+  if (!Number.isInteger(n) || n < min || n > max) {
+    exitWithError(`${flag} must be a whole number from ${min} to ${max}${value === true ? "" : ` (got "${value}")`}`);
+  }
+  return n;
+}
+
+// --targeting / --creative-json / --overrides-json: one JSON object.
+function parseJsonObject(flag, value, example) {
+  let parsed;
+  try {
+    parsed = JSON.parse(value === true ? "" : String(value));
+  } catch {
+    exitWithError(`${flag} must be a JSON object, e.g. '${example}'`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    exitWithError(`${flag} must be a JSON object, e.g. '${example}'`);
+  }
+  return parsed;
+}
+
+// --headlines "Summer is here" --headlines "New, and on sale" (one text per
+// flag, see REPEATABLE_FLAGS) or --headlines "a,b" (a comma list). A text
+// that holds a comma goes in a flag of its own.
+function splitAdTexts(flag, value) {
+  const texts = Array.isArray(value)
+    ? value.map((v) => (v === true ? "" : String(v).trim())).filter(Boolean)
+    : splitComma(value === true ? "" : String(value));
+  if (!texts || !texts.length) exitWithError(`${flag} needs at least one text, e.g. ${flag} "Summer is here"`);
+  return texts;
+}
+
+// --start / --end: the run schedule of a boost or campaign, or undefined.
+function buildAdSchedule(flags) {
+  if (flags.start === undefined && flags.end === undefined) return undefined;
+  const schedule = {};
+  if (flags.start !== undefined) schedule.start_at = parseAdTime("--start", flags.start);
+  if (flags.end !== undefined) schedule.end_at = parseAdTime("--end", flags.end);
+  return schedule;
+}
+
+// --targeting '<json>' with --countries on top (Meta needs the countries),
+// or undefined. --targeting passes a native spec through as raw_targeting.
+function buildAdTargeting(flags) {
+  if (flags.targeting === undefined && flags.countries === undefined) return undefined;
+  const targeting =
+    flags.targeting !== undefined ? parseJsonObject("--targeting", flags.targeting, '{"countries":["NL","BE"]}') : {};
+  if (flags.countries !== undefined) targeting.countries = parseCountries("--countries", flags.countries);
+  return targeting;
+}
+
+// The optional fields of a boost or campaign: --objective, --name, the
+// schedule and the targeting.
+function buildAdCampaignOptions(flags) {
+  const out = {};
+  if (flags.objective !== undefined) out.objective = pickOneOf("--objective", flags.objective, AD_OBJECTIVES);
+  if (flags.name !== undefined) out.name = requireValue("--name", flags.name);
+  const schedule = buildAdSchedule(flags);
+  if (schedule) out.schedule = schedule;
+  const targeting = buildAdTargeting(flags);
+  if (targeting) out.targeting = targeting;
+  return out;
+}
+
+// The budget of ads:boost, ads:boost-multi and ads:create-campaign: --budget
+// and --currency are required (`usage` otherwise), so a campaign is never
+// made with an amount the person did not give.
+function buildAdBudget(flags, usage) {
+  if (flags.budget === undefined || flags.currency === undefined) exitWithError(usage);
+  const budget = {
+    amount: parseAdAmount("--budget", flags.budget),
+    currency: parseCurrency("--currency", flags.currency),
+  };
+  if (flags["budget-type"] !== undefined) {
+    budget.type = pickOneOf("--budget-type", flags["budget-type"], AD_BUDGET_TYPES);
+  }
+  return budget;
+}
+
+// The `creative` object of a boost: TikTok runs as Spark Ads and needs
+// --spark-code (the post owner makes it in the TikTok app: video > "..." >
+// Ad settings > Ad authorization > Generate code), plus --link on a traffic
+// boost. Google boosts promote YouTube videos only and need --headlines
+// (1-5, 40 chars), --descriptions (1-5, 90 chars) and --logo-url (a square
+// image). --creative-json is the whole object; the flags go over it.
+function buildBoostCreative(flags) {
+  const creative =
+    flags["creative-json"] !== undefined
+      ? parseJsonObject("--creative-json", flags["creative-json"], '{"spark_auth_code":"ABC123"}')
+      : {};
+  const texts = { "spark-code": "spark_auth_code", link: "link", "logo-url": "logo_url", "business-name": "business_name", "landing-page-url": "landing_page_url" };
+  for (const [flag, key] of Object.entries(texts)) {
+    if (flags[flag] !== undefined) creative[key] = requireValue(`--${flag}`, flags[flag]);
+  }
+  const lists = { headlines: "headlines", descriptions: "descriptions", "long-headlines": "long_headlines" };
+  for (const [flag, key] of Object.entries(lists)) {
+    if (flags[flag] !== undefined) creative[key] = splitAdTexts(`--${flag}`, flags[flag]);
+  }
+  return Object.keys(creative).length ? creative : undefined;
+}
+
+// --draft-json '<json>' or --draft-file <path>: the whole body of a draft.
+// The output of `ads:draft <id> --json` works as is: the { data } wrapper is
+// taken off, and the networks come from its campaigns when `platforms` is
+// missing (a network whose daily amount differs keeps it as budget_amount).
+function readAdDraftInput(flags) {
+  if (flags["draft-json"] !== undefined && flags["draft-file"] !== undefined) {
+    exitWithError("Pass --draft-json or --draft-file, not both.");
+  }
+  let raw;
+  let source;
+  if (flags["draft-file"] !== undefined) {
+    const file = requireValue("--draft-file", flags["draft-file"]);
+    source = `--draft-file ${file}`;
+    try {
+      raw = fs.readFileSync(file, "utf-8");
+    } catch (err) {
+      exitWithError(`Could not read --draft-file ${file}: ${err.message}`);
+    }
+  } else if (flags["draft-json"] !== undefined) {
+    source = "--draft-json";
+    raw = flags["draft-json"] === true ? "" : String(flags["draft-json"]);
+  } else {
+    return {};
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    exitWithError(`${source} must be a JSON object: the draft body (see ads:create-draft in --help)`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    exitWithError(`${source} must be a JSON object: the draft body (see ads:create-draft in --help)`);
+  }
+  const body = parsed.data && typeof parsed.data === "object" && !parsed.ads && !parsed.platforms ? { ...parsed.data } : { ...parsed };
+  if (!body.platforms && Array.isArray(body.campaigns)) {
+    const base = body.budget && Number(body.budget.amount);
+    body.platforms = body.campaigns.map((c) => {
+      const amount = c.budget && Number(c.budget.amount);
+      return Number.isFinite(amount) && amount !== base ? { platform: c.platform, budget_amount: amount } : c.platform;
+    });
+  }
+  return body;
+}
+
+// --platforms meta,tiktok=20: the networks, each with its own daily amount
+// after "=" when it differs from --budget (TikTok's minimum is 20).
+function parseAdDraftPlatforms(flag, value) {
+  const entries = splitComma(value === true ? "" : String(value));
+  if (!entries || !entries.length) exitWithError(`${flag} takes a comma list of networks, e.g. ${flag} meta,tiktok`);
+  return entries.map((entry) => {
+    const [platform, amount] = entry.split("=").map((s) => s.trim());
+    if (!AD_NETWORKS.includes(platform)) {
+      exitWithError(`${flag}: "${platform}" is not one of ${AD_NETWORKS.join("|")}`);
+    }
+    return amount === undefined ? platform : { platform, budget_amount: parseAdAmount(`${flag} ${platform}=`, amount) };
+  });
+}
+
+// "video" for a .mp4/.mov/.m4v/.webm link, "image" for a picture, else
+// undefined (then --media-type is needed).
+function adMediaTypeFromUrl(url) {
+  const ext = String(url).split(/[?#]/)[0].split(".").pop().toLowerCase();
+  if (["mp4", "mov", "m4v", "webm"].includes(ext)) return "video";
+  if (["jpg", "jpeg", "png", "gif", "webp"].includes(ext)) return "image";
+  return undefined;
+}
+
+const AD_DRAFT_AD_FLAGS = [
+  "media-url",
+  "media-type",
+  "width",
+  "height",
+  "duration",
+  "thumbnail-url",
+  "primary-text",
+  "primary-text-b",
+  "headline",
+  "description",
+  "cta",
+  "link",
+  "overrides-json",
+  "google-business-name",
+  "google-logo-url",
+  "stories-reels-url",
+  "stories-reels-width",
+  "stories-reels-height",
+  "stories-reels-thumbnail-url",
+  "ad-name",
+  "ad-key",
+];
+
+// One ad from the ad flags, laid over `base` (the one ad of --draft-json /
+// --draft-file, or {}). --media-url replaces the picture or video; --width,
+// --height, --duration and --thumbnail-url alone change the one there.
+// --stories-reels-url is Meta's second, upright 9:16 file for Stories and
+// Reels (`placement_media.stories_reels`), the same kind as the main file.
+function buildAdDraftAd(flags, base) {
+  const ad = { ...base };
+  if (flags["ad-key"] !== undefined) ad.key = requireValue("--ad-key", flags["ad-key"]);
+  if (flags["ad-name"] !== undefined) ad.name = requireValue("--ad-name", flags["ad-name"]);
+
+  const current = Array.isArray(ad.media) && ad.media[0] ? ad.media[0] : null;
+  let media = current ? { ...current } : null;
+  if (flags["media-url"] !== undefined) {
+    const url = requireValue("--media-url", flags["media-url"]);
+    media = { url };
+  }
+  const mediaSubFlags = ["media-type", "width", "height", "duration", "thumbnail-url"].filter((f) => flags[f] !== undefined);
+  if (mediaSubFlags.length && !media) {
+    exitWithError(`--${mediaSubFlags[0]} describes the ad's picture or video: pass --media-url too`);
+  }
+  if (media) {
+    if (flags["media-type"] !== undefined) media.type = pickOneOf("--media-type", flags["media-type"], AD_MEDIA_TYPES);
+    if (!media.type) media.type = adMediaTypeFromUrl(media.url);
+    if (!media.type) exitWithError(`--media-type image|video is needed: the type of ${media.url} is not clear from its name`);
+    if (flags.width !== undefined) media.width = parseAdInt("--width", flags.width, 1, 20000);
+    if (flags.height !== undefined) media.height = parseAdInt("--height", flags.height, 1, 20000);
+    if (flags.duration !== undefined) {
+      const d = Number(flags.duration);
+      if (!Number.isFinite(d) || d <= 0) exitWithError(`--duration must be the video length in seconds (got "${flags.duration}")`);
+      media.duration = d;
+    }
+    if (flags["thumbnail-url"] !== undefined) media.thumbnail_url = requireValue("--thumbnail-url", flags["thumbnail-url"]);
+    ad.media = [media];
+  }
+
+  const texts = {
+    "primary-text": "primary_text",
+    "primary-text-b": "primary_text_b",
+    headline: "headline",
+    description: "description",
+    link: "link",
+  };
+  for (const [flag, key] of Object.entries(texts)) {
+    if (flags[flag] !== undefined) ad[key] = requireValue(`--${flag}`, flags[flag]);
+  }
+  if (flags.cta !== undefined) ad.cta = pickOneOf("--cta", flags.cta, AD_CTAS);
+  if (flags["overrides-json"] !== undefined) {
+    ad.overrides = parseJsonObject("--overrides-json", flags["overrides-json"], '{"google":{"headline":"Autumn trips, 3 spots"}}');
+  }
+
+  if (flags["google-business-name"] !== undefined || flags["google-logo-url"] !== undefined) {
+    const network = { ...(ad.network || {}) };
+    const google = { ...(network.google || {}) };
+    if (flags["google-business-name"] !== undefined) {
+      google.business_name = requireValue("--google-business-name", flags["google-business-name"]);
+    }
+    if (flags["google-logo-url"] !== undefined) {
+      google.logo = { url: requireValue("--google-logo-url", flags["google-logo-url"]) };
+    }
+    network.google = google;
+    ad.network = network;
+  }
+
+  const storyFlags = ["stories-reels-width", "stories-reels-height", "stories-reels-thumbnail-url"].filter((f) => flags[f] !== undefined);
+  const currentStory = ad.placement_media && ad.placement_media.stories_reels;
+  if (flags["stories-reels-url"] !== undefined || storyFlags.length) {
+    let story;
+    if (flags["stories-reels-url"] !== undefined) {
+      story = { url: requireValue("--stories-reels-url", flags["stories-reels-url"]) };
+    } else if (currentStory) {
+      story = { ...currentStory };
+    } else {
+      exitWithError(`--${storyFlags[0]} describes the Stories and Reels file: pass --stories-reels-url too`);
+    }
+    // The same kind as the main file (a picture next to a picture).
+    story.type = ad.media && ad.media[0] ? ad.media[0].type : story.type;
+    if (flags["stories-reels-width"] !== undefined) {
+      story.width = parseAdInt("--stories-reels-width", flags["stories-reels-width"], 1, 20000);
+    }
+    if (flags["stories-reels-height"] !== undefined) {
+      story.height = parseAdInt("--stories-reels-height", flags["stories-reels-height"], 1, 20000);
+    }
+    if (flags["stories-reels-thumbnail-url"] !== undefined) {
+      story.thumbnail_url = requireValue("--stories-reels-thumbnail-url", flags["stories-reels-thumbnail-url"]);
+    }
+    ad.placement_media = { ...(ad.placement_media || {}), stories_reels: story };
+  }
+  return ad;
+}
+
+// The full body of ads:create-draft and ads:update-draft (PUT replaces the
+// whole draft): --draft-json / --draft-file first, then the flags over it.
+// Shape: { name, objective, platforms, budget: { amount, currency },
+//   schedule: { duration_days }, targeting: { countries, automatic_audience,
+//   age_min, age_max, genders, placements }, ads: [{ key, name,
+//   media: [{ url, type, width, height, duration, thumbnail_url }],
+//   primary_text, primary_text_b, headline, description, cta, link,
+//   overrides, network: { google }, placement_media: { stories_reels } }] }
+// The CLI refuses a body without networks, a goal, an amount with its
+// currency, the run time (--days or --no-end), countries or an ad, before
+// any request: a draft is never saved with a budget or a run time nobody
+// gave.
+function buildAdDraftBody(flags, command) {
+  const body = readAdDraftInput(flags);
+
+  if (flags.name !== undefined) body.name = requireValue("--name", flags.name);
+  if (flags.objective !== undefined) body.objective = pickOneOf("--objective", flags.objective, AD_DRAFT_OBJECTIVES);
+  if (flags.platforms !== undefined) body.platforms = parseAdDraftPlatforms("--platforms", flags.platforms);
+  if (flags.budget !== undefined || flags.currency !== undefined) {
+    body.budget = { ...(body.budget && typeof body.budget === "object" ? body.budget : {}) };
+    if (flags.budget !== undefined) body.budget.amount = parseAdAmount("--budget", flags.budget);
+    if (flags.currency !== undefined) body.budget.currency = parseCurrency("--currency", flags.currency);
+  }
+  if (flags.days !== undefined && flags["no-end"] !== undefined) exitWithError("Pass --days or --no-end, not both.");
+  if (flags.days !== undefined) body.schedule = { duration_days: parseAdInt("--days", flags.days, 1, MAX_AD_DRAFT_DAYS) };
+  if (flags["no-end"] === true || flags["no-end"] === "true") body.schedule = { duration_days: null };
+
+  const audienceFlags = ["age-min", "age-max", "genders"].filter((f) => flags[f] !== undefined);
+  if (flags.countries !== undefined || flags.placements !== undefined || audienceFlags.length) {
+    const targeting = { ...(body.targeting && typeof body.targeting === "object" ? body.targeting : {}) };
+    if (flags.countries !== undefined) targeting.countries = parseCountries("--countries", flags.countries);
+    if (flags.placements !== undefined) targeting.placements = pickOneOf("--placements", flags.placements, AD_PLACEMENTS);
+    // An age or gender limit means the person picks the audience: the
+    // network's automatic audience sets neither.
+    if (audienceFlags.length) targeting.automatic_audience = false;
+    if (flags["age-min"] !== undefined) targeting.age_min = parseAdInt("--age-min", flags["age-min"], 13, 65);
+    if (flags["age-max"] !== undefined) targeting.age_max = parseAdInt("--age-max", flags["age-max"], 13, 65);
+    if (flags.genders !== undefined) {
+      targeting.genders = pickSomeOf("--genders", flags.genders, AD_GENDERS);
+      if (targeting.genders.length !== 1) exitWithError("--genders takes one gender: male or female (leave it out for both)");
+    }
+    body.targeting = targeting;
+  }
+
+  if (AD_DRAFT_AD_FLAGS.some((f) => flags[f] !== undefined)) {
+    const ads = Array.isArray(body.ads) ? body.ads : [];
+    if (ads.length > 1) {
+      exitWithError(
+        `The draft body has ${ads.length} ads: change them in --draft-json / --draft-file, the ad flags describe one ad.`
+      );
+    }
+    body.ads = [buildAdDraftAd(flags, ads[0] || {})];
+  }
+
+  const missing = [];
+  const platforms = Array.isArray(body.platforms) ? body.platforms : [];
+  if (!platforms.length) missing.push("--platforms");
+  if (!body.objective) missing.push("--objective");
+  const budget = body.budget && typeof body.budget === "object" ? body.budget : {};
+  const amount = Number(budget.amount);
+  if (!Number.isFinite(amount) || amount <= 0) missing.push("--budget");
+  if (!budget.currency) missing.push("--currency");
+  if (!body.schedule || typeof body.schedule !== "object" || body.schedule.duration_days === undefined) {
+    missing.push("--days <1-90> or --no-end");
+  }
+  const countries = body.targeting && Array.isArray(body.targeting.countries) ? body.targeting.countries : [];
+  if (!countries.length) missing.push("--countries");
+  const ads = Array.isArray(body.ads) ? body.ads : [];
+  if (!ads.length) missing.push("an ad (--media-url, --primary-text, --link)");
+  if (missing.length) {
+    exitWithError(
+      `${command} needs ${missing.join(", ")} (or the same fields in --draft-json / --draft-file). A draft is never saved with a budget or a run time the person did not give.`
+    );
+  }
+  if (ads.length > MAX_ADS_PER_DRAFT) exitWithError(`A draft holds at most ${MAX_ADS_PER_DRAFT} ads (got ${ads.length}).`);
+  ads.forEach((ad, i) => {
+    const media = ad && Array.isArray(ad.media) ? ad.media[0] : null;
+    const gaps = [];
+    if (!media || !media.url) gaps.push("--media-url");
+    if (!ad || !ad.primary_text) gaps.push("--primary-text");
+    if (!ad || !ad.link) gaps.push("--link");
+    if (gaps.length) {
+      exitWithError(`Ad ${i + 1} needs ${gaps.join(", ")}: the picture or video, the ad text and the website it opens.`);
+    }
+  });
+  return body;
+}
+
 // ─── Output Formatters ──────────────────────────────────────────────────────
 
 function outputJson(data) {
@@ -1351,6 +1852,158 @@ function printCommentDm(automation) {
   console.log(`Comment-to-DM: ${state} (${keywords}; ${ids})`);
 }
 
+// --- Ads ---
+
+// Sums of money without float noise (0.1 x 3 = 0.3).
+function roundMoney(n) {
+  return Math.round(n * 100) / 100;
+}
+
+// "10 EUR per day", "300 EUR lifetime".
+function describeAdBudget(budget) {
+  if (!budget || budget.amount == null) return "(no budget)";
+  const money = `${budget.amount} ${budget.currency || ""}`.trim();
+  return `${money}${budget.type === "lifetime" ? " lifetime" : " per day"}`;
+}
+
+// The daily amount of one network of a draft: "10 EUR a day".
+function describeDraftAmount(budget) {
+  if (!budget || budget.amount == null) return "(no amount)";
+  return `${`${budget.amount} ${budget.currency || ""}`.trim()} a day`;
+}
+
+// One campaign: in a list (`index` set, indented) or on its own.
+function formatAdCampaign(c, index) {
+  const pad = index === undefined ? "" : "    ";
+  const lines = [`${index === undefined ? "" : `#${index + 1}  `}ID: ${c.id}`];
+  lines.push(`${pad}Name: ${c.name || "(no name)"}`);
+  lines.push(`${pad}Platform: ${c.platform}`);
+  lines.push(`${pad}Type: ${c.campaign_type || "campaign"}`);
+  lines.push(`${pad}Status: ${c.status}`);
+  lines.push(`${pad}Budget: ${describeAdBudget(c.budget)}`);
+  if (c.objective) lines.push(`${pad}Goal: ${c.objective}`);
+  const schedule = c.schedule || {};
+  if (schedule.start_at) lines.push(`${pad}Starts: ${schedule.start_at}`);
+  if (schedule.end_at) lines.push(`${pad}Ends: ${schedule.end_at}`);
+  if (c.group_id) lines.push(`${pad}Ad draft: ${c.group_id}`);
+  const m = c.metrics || {};
+  const results = [];
+  if (m.spend != null) results.push(`${`${m.spend} ${(c.budget && c.budget.currency) || ""}`.trim()} spent`);
+  if (m.impressions != null) results.push(`${m.impressions} impressions`);
+  if (m.clicks != null) results.push(`${m.clicks} clicks`);
+  if (m.ctr != null) results.push(`${m.ctr}% ctr`);
+  if (results.length) lines.push(`${pad}Results: ${results.join(", ")}`);
+  if (c.external_campaign_id) lines.push(`${pad}Network campaign ID: ${c.external_campaign_id}`);
+  if (c.errors) lines.push(`${pad}Error: ${c.errors}`);
+  if (c.created_at) lines.push(`${pad}Created: ${c.created_at}`);
+  return lines.join("\n");
+}
+
+function formatAdAccount(a, index) {
+  const info = a.account_info || {};
+  const lines = [`#${index + 1}  ID: ${a.id}`];
+  lines.push(`    Platform: ${a.platform}`);
+  lines.push(`    Name: ${info.name || "(no name)"}`);
+  lines.push(`    Currency: ${info.currency || "(unknown)"}`);
+  lines.push(`    Selected for spending: ${a.is_selected ? "yes" : "no (select it in the OmniSocials web app)"}`);
+  if (a.status) lines.push(`    Status: ${a.status}`);
+  if (a.external_account_id) lines.push(`    Network account ID: ${a.external_account_id}`);
+  if (info.billing_ok === false) {
+    lines.push("    No payment method on the network: campaigns do not run until one is added in the network's Ads Manager.");
+  }
+  if (a.needs_reauth) lines.push("    Needs a reconnect in the OmniSocials web app.");
+  return lines.join("\n");
+}
+
+// A network of a draft that never started: a launch can start it.
+function draftCampaignCanStart(c) {
+  return (c.status === "draft" || c.status === "error") && !c.external_campaign_id;
+}
+
+// What still stops one network of a draft from starting.
+function draftNetworkIssues(c) {
+  const readiness = c.readiness || {};
+  // Joined with "; ", so the API's sentences lose their full stop.
+  const text = (issue) => String(issue.message || issue.code || "").replace(/\.$/, "");
+  const issues = c.ad_account ? [] : ["no ad account yet (ads:attach-account)"];
+  for (const issue of readiness.issues || []) issues.push(text(issue));
+  for (const ad of readiness.ads || []) {
+    for (const issue of ad.issues || []) issues.push(`ad ${(Number(ad.index) || 0) + 1}: ${text(issue)}`);
+  }
+  return issues;
+}
+
+// A network of a draft that a launch starts now: never started, ready, with
+// an ad account.
+function draftCampaignReady(c) {
+  return draftCampaignCanStart(c) && Boolean(c.ad_account) && Boolean(c.readiness && c.readiness.ready === true);
+}
+
+// One network of a draft: "meta (campaign 51): 10 EUR a day, ad account
+// Acme Ads (7), ready".
+function describeDraftNetwork(c) {
+  const account = c.ad_account ? `, ad account ${c.ad_account.name || c.ad_account.id} (${c.ad_account.id})` : "";
+  let state;
+  if (!draftCampaignCanStart(c)) state = `started (${c.status})`;
+  else {
+    const issues = draftNetworkIssues(c);
+    state = draftCampaignReady(c) ? "ready" : `not ready: ${issues.join("; ") || "see the review link"}`;
+  }
+  let line = `${c.platform} (campaign ${c.id}): ${describeDraftAmount(c.budget)}${account}, ${state}`;
+  if (c.ad_account && c.ad_account.billing_ok === false) {
+    line += ". No payment method on the network: it does not run until one is added";
+  }
+  return line;
+}
+
+function formatAdDraft(d) {
+  const lines = [];
+  lines.push(`Draft: ${d.group_id}`);
+  lines.push(`Name: ${d.name || "(no name)"}`);
+  lines.push(`Goal: ${d.objective}`);
+  if (d.status) {
+    lines.push(`Status: ${d.status === "launched" ? "launched (at least one network started)" : "draft (spends nothing)"}`);
+  }
+  const days = d.schedule && d.schedule.duration_days;
+  lines.push(`Runs: ${days ? `${days} days after the start` : "until it is stopped (no end date)"}`);
+  const t = d.targeting || {};
+  lines.push(`Countries: ${(t.countries || []).join(", ") || "none"}`);
+  if (t.automatic_audience === false) {
+    const ages = t.age_min || t.age_max ? `ages ${t.age_min || 13} to ${t.age_max === 65 ? "65+" : t.age_max || "65+"}` : "all ages";
+    const genders = Array.isArray(t.genders) && t.genders.length ? t.genders.join(", ") : "all genders";
+    lines.push(`Audience: ${ages}, ${genders}`);
+  } else {
+    lines.push("Audience: automatic (the network finds the people)");
+  }
+  if (t.placements === "feeds") lines.push("Placements: feeds only (Meta)");
+  const ads = Array.isArray(d.ads) ? d.ads : [];
+  lines.push(`Ads (${ads.length}):`);
+  ads.forEach((ad, i) => {
+    lines.push(`  ${i + 1}. ${ad.name || `Ad ${i + 1}`}${ad.key ? `  (key ${ad.key})` : ""}`);
+    const media = Array.isArray(ad.media) ? ad.media[0] : null;
+    if (media) lines.push(`     ${media.type || "media"}: ${media.url}`);
+    const story = ad.placement_media && ad.placement_media.stories_reels;
+    if (story) lines.push(`     Stories and Reels (Meta): ${story.url}`);
+    if (ad.primary_text) lines.push(`     Text: "${truncate(ad.primary_text, 80)}"`);
+    if (ad.primary_text_b) lines.push(`     Text B: "${truncate(ad.primary_text_b, 80)}"`);
+    if (ad.headline) lines.push(`     Headline: ${ad.headline}`);
+    if (ad.link) lines.push(`     Link: ${ad.link}${ad.cta ? `  (button: ${ad.cta})` : ""}`);
+  });
+  const campaigns = Array.isArray(d.campaigns) ? d.campaigns : [];
+  lines.push("Networks:");
+  for (const c of campaigns) {
+    lines.push(`  ${describeDraftNetwork(c)}`);
+    if (c.errors) lines.push(`    Error: ${c.errors}`);
+  }
+  if (d.review_url) lines.push(`Review and start it in OmniSocials: ${d.review_url}`);
+  return lines.join("\n");
+}
+
+// What a per-target result says: "[code] message".
+function describeAdTargetError(r) {
+  return `${r.code ? `[${String(r.code).toLowerCase()}] ` : ""}${r.error || "error"}`;
+}
+
 // --- Social Inbox ---
 
 // Message direction values vary a little by platform ("outbound"/"outgoing"/
@@ -1567,6 +2220,28 @@ function handleAutomationResult(result, flags, formatter) {
     process.exit(1);
   }
   handleResult(result, flags, formatter);
+}
+
+// handleResult plus what to do about an ads error (ADS_ERROR_HINTS): the
+// opt-in scopes, the ads permissions, a missing budget confirmation. The
+// hint goes to stderr, also with --json.
+function handleAdsResult(result, flags, formatter) {
+  const error = result && result.error;
+  if (error) {
+    if (flags.json) outputJson(result);
+    else console.error(`Error [${error.code}]: ${error.message}`);
+    const hint = ADS_ERROR_HINTS[String(error.code || "").toLowerCase()];
+    if (hint) console.error(hint);
+    process.exit(1);
+  }
+  handleResult(result, flags, formatter);
+}
+
+// The amount and currency a command is about to confirm, printed before the
+// request that starts spend. On stderr with --json, so stdout stays JSON.
+function printAdsNotice(flags, text) {
+  if (flags.json) console.error(text);
+  else console.log(text);
 }
 
 // ─── Command Handlers ───────────────────────────────────────────────────────
@@ -3403,19 +4078,735 @@ async function cmdInboxDelete(config, flags, positional) {
   });
 }
 
+// --- Ads ---
+// Bodies and checks: the Ads section near the top. Every call goes through
+// handleAdsResult for the hints; the three commands that start spend read
+// the campaigns first and print what they are about to confirm.
+
+const ADS_BOOST_FLAGS =
+  "--budget-type daily|lifetime --objective <goal> --name <name> --start <ISO8601> --end <ISO8601> --countries NL,BE --targeting '<json>' --spark-code <code> (TikTok) --link <url> (TikTok traffic) --headlines --descriptions --logo-url (Google) --long-headlines --business-name --landing-page-url --creative-json '<json>'";
+const ADS_BUDGET_RULE =
+  "The budget is the person's own number in MAJOR currency units (10 = 10 EUR) in the ad account's currency: never make one up. This makes a DRAFT only; nothing spends until it is started.";
+
+async function cmdAdsAccounts(config, flags) {
+  const result = await apiRequest(config, "GET", "/ads/accounts");
+  handleAdsResult(result, flags, (data) => {
+    const accounts = Array.isArray(data) ? data : [];
+    const networks = Array.isArray(result.platforms_available) ? result.platforms_available : [];
+    if (!accounts.length) {
+      console.log(
+        "No ad accounts connected. Ad accounts are connected and selected for spending in the OmniSocials web app; this cannot be done through the API."
+      );
+    } else {
+      console.log(`Ad accounts (${accounts.length})`);
+      console.log("─".repeat(40));
+      console.log(accounts.map(formatAdAccount).join("\n\n"));
+      console.log(
+        "\nUse the ID as --ad-account-id. Only an account selected for spending can run campaigns, and a budget uses the account's currency."
+      );
+    }
+    if (networks.length) console.log(`Ad networks on this server: ${networks.join(", ")}`);
+  });
+}
+
+async function cmdAdsCampaigns(config, flags) {
+  const query = {};
+  if (flags.status !== undefined) query.status = pickOneOf("--status", flags.status, AD_CAMPAIGN_STATUSES);
+  if (flags.platform !== undefined) query.platform = pickOneOf("--platform", flags.platform, AD_NETWORKS);
+  const type = flags.type !== undefined ? flags.type : flags["campaign-type"];
+  if (type !== undefined) query.campaign_type = pickOneOf("--type", type, AD_CAMPAIGN_TYPES);
+  if (flags.limit !== undefined) query.limit = parseAdInt("--limit", flags.limit, 1, 100);
+  if (flags.offset !== undefined) query.offset = parseAdInt("--offset", flags.offset, 0, 1000000000);
+
+  const result = await apiRequest(config, "GET", "/ads/campaigns", undefined, query);
+  handleAdsResult(result, flags, (data) => {
+    const campaigns = Array.isArray(data) ? data : [];
+    if (!campaigns.length) {
+      console.log(`No ad campaigns found${query.status ? ` with status ${query.status}` : ""}.`);
+      return;
+    }
+    const pagination = result.pagination || {};
+    const total = typeof pagination.total === "number" ? pagination.total : campaigns.length;
+    console.log(`Ad campaigns (${campaigns.length} of ${total})`);
+    console.log("─".repeat(40));
+    console.log(campaigns.map(formatAdCampaign).join("\n\n"));
+    if (pagination.has_more) {
+      const next = (Number(pagination.offset) || 0) + (Number(pagination.limit) || campaigns.length);
+      console.log(`\nMore: pass --offset ${next} for the next page.`);
+    }
+    console.log(
+      "\nStatus: draft = not on the ad network, spends nothing; pending_review = in the network's ad review; active = running and spending."
+    );
+  });
+}
+
+async function cmdAdsCampaign(config, flags, positional) {
+  const id = positional[0];
+  if (!id) exitWithError("Usage: omnisocials ads:campaign <id>");
+
+  const result = await apiRequest(config, "GET", `/ads/campaigns/${encodeURIComponent(id)}`);
+  handleAdsResult(result, flags, (c) => {
+    console.log(formatAdCampaign(c));
+    if (c.targeting && Object.keys(c.targeting).length) console.log(`Targeting: ${JSON.stringify(c.targeting)}`);
+  });
+}
+
+async function cmdAdsSuggestions(config, flags) {
+  const result = await apiRequest(config, "GET", "/ads/suggestions");
+  handleAdsResult(result, flags, (data) => {
+    const suggestions = Array.isArray(data) ? data : [];
+    if (!suggestions.length) {
+      console.log(
+        "No boost suggestions right now: no recent organic post beats the workspace median. Check again once the next posts have had time to collect engagement."
+      );
+      return;
+    }
+    console.log(`Boost suggestions (${suggestions.length}): organic posts beating the workspace median`);
+    console.log("─".repeat(40));
+    suggestions.forEach((s, i) => {
+      console.log(`#${i + 1}  Post ID: ${s.post_id} (${s.platform})`);
+      if (s.description_snippet) console.log(`    "${truncate(s.description_snippet, 100)}"`);
+      if (s.published_at) console.log(`    Published: ${s.published_at}`);
+      console.log(`    Engagement: ${s.metric_value} against a median of ${s.workspace_median} (${s.multiplier}x)`);
+      if (s.reason) console.log(`    Why: ${s.reason}`);
+    });
+    console.log(
+      "\nSuggestions only: nothing was made and no money is involved. To boost one, ask the person for the budget and how long it runs, then use ads:boost (one ad account) or ads:boost-multi (several)."
+    );
+  });
+}
+
+async function cmdAdsOverview(config, flags) {
+  const result = await apiRequest(config, "GET", "/ads/overview");
+  handleAdsResult(result, flags, (d) => {
+    const data = d || {};
+    console.log("Ads overview");
+    console.log("─".repeat(40));
+    console.log(`Connected ad accounts: ${data.connected_accounts ?? 0}`);
+    console.log(`Campaigns: ${data.campaigns_total ?? 0}`);
+    const byStatus = Object.entries(data.campaigns_by_status || {}).filter(([, n]) => Number(n) > 0);
+    for (const [status, n] of byStatus) console.log(`  ${status}: ${n}`);
+    const totals = data.totals || {};
+    console.log(`Total spend: ${totals.spend ?? 0}`);
+    console.log(`Total impressions: ${totals.impressions ?? 0}`);
+    console.log(`Total clicks: ${totals.clicks ?? 0}`);
+  });
+}
+
+async function cmdAdsBoost(config, flags) {
+  const usage = `Usage: omnisocials ads:boost --post-id <id> --ad-account-id <id> --budget <amount> --currency <ISO> [${ADS_BOOST_FLAGS}]\n${ADS_BUDGET_RULE}`;
+  if (flags["post-id"] === undefined || flags["ad-account-id"] === undefined) exitWithError(usage);
+
+  const body = {
+    post_id: parseAdId("--post-id", flags["post-id"]),
+    ad_account_id: parseAdId("--ad-account-id", flags["ad-account-id"]),
+    budget: buildAdBudget(flags, usage),
+    ...buildAdCampaignOptions(flags),
+  };
+  const creative = buildBoostCreative(flags);
+  if (creative) body.creative = creative;
+
+  const result = await apiRequest(config, "POST", "/ads/boost", body);
+  handleAdsResult(result, flags, (c) => {
+    console.log("Boost draft created. No money is spent: nothing exists on the ad network yet.");
+    console.log(formatAdCampaign(c));
+    console.log(
+      `\nShow the person the budget (${describeAdBudget(c.budget)}) and let them review the draft. Only after they confirm that exact amount, start it with:\n  omnisocials ads:activate ${c.id} --confirm-budget ${c.budget ? c.budget.amount : "<amount>"}`
+    );
+  });
+}
+
+async function cmdAdsBoostMulti(config, flags) {
+  const usage = `Usage: omnisocials ads:boost-multi --post-id <id> --ad-account-ids <id,id,...> --budget <amount> --currency <ISO> [${ADS_BOOST_FLAGS}]\nOne DRAFT boost per ad account (max ${MAX_AD_TARGETS}). The SAME budget applies to every account, so the total is budget x accounts.\n${ADS_BUDGET_RULE}`;
+  if (flags["post-id"] === undefined || flags["ad-account-ids"] === undefined) exitWithError(usage);
+
+  const body = {
+    post_id: parseAdId("--post-id", flags["post-id"]),
+    ad_account_ids: parseAdIdList("--ad-account-ids", flags["ad-account-ids"]),
+    budget: buildAdBudget(flags, usage),
+    ...buildAdCampaignOptions(flags),
+  };
+  const creative = buildBoostCreative(flags);
+  if (creative) body.creative = creative;
+
+  const result = await apiRequest(config, "POST", "/ads/boost-multi", body);
+  // The answer is { results } with no `data`: the formatter reads `result`.
+  handleAdsResult(result, flags, () => {
+    const results = Array.isArray(result.results) ? result.results : [];
+    const created = results.filter((r) => r.ok);
+    console.log(
+      `Boost on ${results.length} ad account${results.length === 1 ? "" : "s"}: ${created.length} draft${created.length === 1 ? "" : "s"} created. No money is spent: nothing exists on any ad network yet.`
+    );
+    console.log("─".repeat(40));
+    results.forEach((r, i) => {
+      const c = r.campaign || r.boost;
+      const network = r.platform || (c && c.platform) || "?";
+      if (r.ok) console.log(`#${i + 1}  Ad account ${r.ad_account_id} (${network}): draft campaign ${c ? c.id : "?"}`);
+      else console.log(`#${i + 1}  Ad account ${r.ad_account_id} (${network}): not created, ${describeAdTargetError(r)}`);
+    });
+    if (created.length) {
+      const b = body.budget;
+      const per = b.type === "lifetime" ? "lifetime" : "per day";
+      const ids = created.map((r) => (r.campaign || r.boost || {}).id).filter((id) => id != null);
+      console.log(
+        `\nTotal once all ${created.length} are started: ${b.amount} ${b.currency} x ${created.length} campaigns = ${roundMoney(b.amount * created.length)} ${b.currency} ${per}.`
+      );
+      console.log(
+        `Show the person that TOTAL. Only after they confirm it, start them together with:\n  omnisocials ads:activate-multi --ids ${ids.join(",")} --confirm-budget ${b.amount}`
+      );
+    }
+    if (results.length > created.length) {
+      console.log("\nFix what the failed lines say, then boost those accounts again with ads:boost.");
+    }
+  });
+}
+
+async function cmdAdsCreateCampaign(config, flags) {
+  const usage = `Usage: omnisocials ads:create-campaign --ad-account-id <id> --name "..." --budget <amount> --currency <ISO> [--budget-type daily|lifetime --objective <goal> --start --end --countries NL,BE --targeting '<json>']\n${ADS_BUDGET_RULE}`;
+  if (flags["ad-account-id"] === undefined || flags.name === undefined) exitWithError(usage);
+
+  const body = {
+    ad_account_id: parseAdId("--ad-account-id", flags["ad-account-id"]),
+    budget: buildAdBudget(flags, usage),
+    ...buildAdCampaignOptions(flags),
+  };
+
+  const result = await apiRequest(config, "POST", "/ads/campaigns", body);
+  handleAdsResult(result, flags, (c) => {
+    console.log("Draft campaign created. No money is spent: nothing exists on the ad network yet.");
+    console.log(formatAdCampaign(c));
+    console.log(
+      "\nA campaign made here has no ads, so it cannot start (campaign_has_no_ads). For a new ad with its own picture or video, text and link, use ads:create-draft."
+    );
+  });
+}
+
+async function cmdAdsUpdateCampaign(config, flags, positional) {
+  const id = positional[0];
+  const usage =
+    'Usage: omnisocials ads:update-campaign <id> [--name "..." --budget <amount> --currency <ISO> --budget-type daily|lifetime --confirm-budget <new amount> --start --end --countries NL,BE --targeting \'<json>\']\nRaising the budget of a campaign that runs raises real spend: it needs --confirm-budget with the new amount, after the person confirmed it.';
+  if (!id) exitWithError(usage);
+
+  const body = {};
+  if (flags.name !== undefined) body.name = requireValue("--name", flags.name);
+  if (flags.budget !== undefined || flags.currency !== undefined || flags["budget-type"] !== undefined) {
+    if (flags.budget === undefined || flags.currency === undefined) {
+      exitWithError("A new budget needs --budget <amount> and --currency <ISO> (the ad account's currency).");
+    }
+    body.budget = buildAdBudget(flags, usage);
+  }
+  const schedule = buildAdSchedule(flags);
+  if (schedule) body.schedule = schedule;
+  const targeting = buildAdTargeting(flags);
+  if (targeting) body.targeting = targeting;
+  if (flags["confirm-budget"] !== undefined) {
+    if (!body.budget) exitWithError("--confirm-budget goes with --budget: it confirms the new, higher budget.");
+    const confirm = parseAdAmount("--confirm-budget", flags["confirm-budget"]);
+    if (confirm !== body.budget.amount) {
+      exitWithError(`--confirm-budget ${confirm} does not match --budget ${body.budget.amount}. Nothing was changed.`);
+    }
+    body.confirm_budget_amount = confirm;
+  }
+  if (!Object.keys(body).length) exitWithError(`Nothing to update.\n${usage}`);
+  if (body.confirm_budget_amount !== undefined) {
+    printAdsNotice(
+      flags,
+      `About to confirm the new budget of campaign ${id}: ${describeAdBudget(body.budget)}. On a campaign that runs this raises real spend.`
+    );
+  }
+
+  const result = await apiRequest(config, "PATCH", `/ads/campaigns/${encodeURIComponent(id)}`, body);
+  handleAdsResult(result, flags, (c) => {
+    console.log("Ad campaign updated.");
+    console.log(formatAdCampaign(c));
+  });
+}
+
+async function cmdAdsActivate(config, flags, positional) {
+  const id = positional[0];
+  if (!id || flags["confirm-budget"] === undefined) {
+    exitWithError(
+      "Usage: omnisocials ads:activate <id> --confirm-budget <amount>\nTHIS STARTS REAL AD SPEND. --confirm-budget must equal the campaign's budget and must come from the person's explicit OK on that amount: show them the budget first, never fill it in yourself. A campaign of an ad draft starts with ads:launch-draft."
+    );
+  }
+  const confirm = parseAdAmount("--confirm-budget", flags["confirm-budget"]);
+
+  // Read the campaign first: the amount and currency printed below are the
+  // campaign's own, and a confirmation that does not match is never sent.
+  const read = await apiRequest(config, "GET", `/ads/campaigns/${encodeURIComponent(id)}`);
+  if (read.error) handleAdsResult(read, flags);
+  const campaign = read.data || {};
+  if (Number(campaign.budget && campaign.budget.amount) !== confirm) {
+    exitWithError(
+      `Campaign ${id} has a budget of ${describeAdBudget(campaign.budget)}, not ${confirm}. Nothing was started. Confirm the campaign's own budget with the person, or change it first with ads:update-campaign.`
+    );
+  }
+  printAdsNotice(
+    flags,
+    `About to confirm ${describeAdBudget(campaign.budget)} on campaign ${campaign.id ?? id} (${campaign.platform}${campaign.name ? `, "${campaign.name}"` : ""}). This starts real ad spend.`
+  );
+
+  const result = await apiRequest(config, "POST", `/ads/campaigns/${encodeURIComponent(id)}/activate`, {
+    confirm_budget_amount: confirm,
+  });
+  handleAdsResult(result, flags, (c) => {
+    console.log(
+      c.status === "pending_review"
+        ? "Campaign started. It is in the network's ad review: spend begins once the network approves it, usually within 24 hours."
+        : "Campaign started. Real ad spend is running."
+    );
+    console.log(formatAdCampaign(c));
+    console.log(`\nPause it any time with: omnisocials ads:pause ${c.id}`);
+  });
+}
+
+async function cmdAdsActivateMulti(config, flags) {
+  if (flags.ids === undefined || flags["confirm-budget"] === undefined) {
+    exitWithError(
+      `Usage: omnisocials ads:activate-multi --ids <id,id,...> --confirm-budget <amount>\nTHIS STARTS REAL AD SPEND ON EVERY LISTED CAMPAIGN (max ${MAX_AD_TARGETS}). --confirm-budget must equal the budget of each one. The total is amount x campaigns: show the person that TOTAL and get their OK on it first, never fill it in yourself.`
+    );
+  }
+  const ids = parseAdIdList("--ids", flags.ids);
+  const confirm = parseAdAmount("--confirm-budget", flags["confirm-budget"]);
+
+  // Read every campaign first, for the same reasons as ads:activate.
+  const campaigns = [];
+  for (const id of ids) {
+    const read = await apiRequest(config, "GET", `/ads/campaigns/${id}`);
+    if (read.error) {
+      console.error(`Could not read campaign ${id}. Nothing was started.`);
+      handleAdsResult(read, flags);
+    }
+    campaigns.push({ id, ...(read.data || {}) });
+  }
+  const wrong = campaigns.filter((c) => Number(c.budget && c.budget.amount) !== confirm);
+  if (wrong.length) {
+    exitWithError(
+      `${wrong.map((c) => `Campaign ${c.id} has a budget of ${describeAdBudget(c.budget)}, not ${confirm}.`).join(" ")} Nothing was started. Leave ${wrong.length === 1 ? "it" : "them"} out of --ids and start ${wrong.length === 1 ? "it" : "them"} with ads:activate after the person confirms ${wrong.length === 1 ? "its" : "each"} own budget.`
+    );
+  }
+  // One total per currency and budget type ("30 EUR per day").
+  const totals = new Map();
+  for (const c of campaigns) {
+    const key = `${c.budget.currency || ""}|${c.budget.type === "lifetime" ? "lifetime" : "per day"}`;
+    totals.set(key, (totals.get(key) || 0) + Number(c.budget.amount));
+  }
+  const totalWords = [...totals.entries()].map(([key, sum]) => {
+    const [currency, per] = key.split("|");
+    return `${`${roundMoney(sum)} ${currency}`.trim()} ${per}`;
+  });
+  printAdsNotice(
+    flags,
+    [
+      `About to confirm ${confirm} on ${campaigns.length} campaign${campaigns.length === 1 ? "" : "s"}:`,
+      ...campaigns.map((c) => `  ${c.id}: ${describeAdBudget(c.budget)} (${c.platform}${c.name ? `, "${c.name}"` : ""})`),
+      `Total: ${totalWords.join(" and ")}. This starts real ad spend on every one.`,
+    ].join("\n")
+  );
+
+  const result = await apiRequest(config, "POST", "/ads/campaigns/activate-multi", {
+    campaign_ids: ids,
+    confirm_budget_amount: confirm,
+  });
+  // The answer is { results } with no `data`: the formatter reads `result`.
+  handleAdsResult(result, flags, () => {
+    const results = Array.isArray(result.results) ? result.results : [];
+    const started = results.filter((r) => r.ok);
+    console.log(`Started ${started.length} of ${results.length} campaign${results.length === 1 ? "" : "s"}.`);
+    console.log("─".repeat(40));
+    results.forEach((r, i) => {
+      if (r.ok) console.log(`#${i + 1}  Campaign ${r.campaign_id}: started (${(r.campaign && r.campaign.status) || "?"})`);
+      else console.log(`#${i + 1}  Campaign ${r.campaign_id}: not started, ${describeAdTargetError(r)}`);
+    });
+    if (started.length) {
+      console.log(
+        "\nA campaign in pending_review spends once the network approves it, usually within 24 hours. Pause any of them with: omnisocials ads:pause <id>"
+      );
+    }
+    if (results.length > started.length) console.log("A campaign that did not start spends nothing.");
+  });
+}
+
+async function cmdAdsPause(config, flags, positional) {
+  const id = positional[0];
+  if (!id) exitWithError("Usage: omnisocials ads:pause <id>");
+
+  const result = await apiRequest(config, "POST", `/ads/campaigns/${encodeURIComponent(id)}/pause`);
+  handleAdsResult(result, flags, (c) => {
+    console.log(`Campaign ${c.id} paused: spend has stopped. Resume it with ads:resume ${c.id}.`);
+    console.log(`Status: ${c.status}`);
+  });
+}
+
+async function cmdAdsResume(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    exitWithError(
+      "Usage: omnisocials ads:resume <id>\nResuming starts real ad spend again: confirm with the person first and name the budget that resumes."
+    );
+  }
+
+  const result = await apiRequest(config, "POST", `/ads/campaigns/${encodeURIComponent(id)}/resume`);
+  handleAdsResult(result, flags, (c) => {
+    console.log(`Campaign ${c.id} resumed: ad spend is running again at ${describeAdBudget(c.budget)}.`);
+    console.log(`Status: ${c.status}`);
+  });
+}
+
+async function cmdAdsDeleteCampaign(config, flags, positional) {
+  const id = positional[0];
+  if (!id) exitWithError("Usage: omnisocials ads:delete-campaign <id>  (also removes it on the ad network; cannot be undone)");
+
+  const result = await apiRequest(config, "DELETE", `/ads/campaigns/${encodeURIComponent(id)}`);
+  handleAdsResult(result, flags, () => {
+    console.log(
+      `Ad campaign ${id} deleted, on the ad network too. A campaign that spent keeps its spend in ads:overview.`
+    );
+  });
+}
+
+async function cmdAdsKeywords(config, flags) {
+  const usage =
+    'Usage: omnisocials ads:keywords [--keywords "a,b" (up to 20) --url <page>] (one of them, or both) [--country US --language en --limit <1-500> --ad-account-id <id>]';
+  if (flags.keywords === undefined && flags.url === undefined) exitWithError(usage);
+
+  const body = {};
+  if (flags.keywords !== undefined) {
+    body.keywords = splitAdTexts("--keywords", flags.keywords);
+    if (body.keywords.length > 20) exitWithError(`--keywords takes up to 20 seed keywords (got ${body.keywords.length})`);
+  }
+  if (flags.url !== undefined) body.url = requireValue("--url", flags.url);
+  if (flags.country !== undefined) body.country = requireValue("--country", flags.country).toUpperCase();
+  if (flags.language !== undefined) body.language = requireValue("--language", flags.language).toLowerCase();
+  if (flags.limit !== undefined) body.limit = parseAdInt("--limit", flags.limit, 1, 500);
+  if (flags["ad-account-id"] !== undefined) body.ad_account_id = requireValue("--ad-account-id", flags["ad-account-id"]);
+
+  const result = await apiRequest(config, "POST", "/ads/research/keywords", body);
+  handleAdsResult(result, flags, (d) => printKeywordRows(d, "ideas", "Keyword ideas"));
+}
+
+async function cmdAdsKeywordMetrics(config, flags) {
+  if (flags.keywords === undefined) {
+    exitWithError('Usage: omnisocials ads:keyword-metrics --keywords "a,b" (1-200) [--country US --language en --ad-account-id <id>]');
+  }
+  const body = { keywords: splitAdTexts("--keywords", flags.keywords) };
+  if (body.keywords.length > 200) exitWithError(`--keywords takes up to 200 keywords (got ${body.keywords.length})`);
+  if (flags.country !== undefined) body.country = requireValue("--country", flags.country).toUpperCase();
+  if (flags.language !== undefined) body.language = requireValue("--language", flags.language).toLowerCase();
+  if (flags["ad-account-id"] !== undefined) body.ad_account_id = requireValue("--ad-account-id", flags["ad-account-id"]);
+
+  const result = await apiRequest(config, "POST", "/ads/research/keywords/metrics", body);
+  handleAdsResult(result, flags, (d) => printKeywordRows(d, "keywords", "Keyword metrics"));
+}
+
+// The rows of ads:keywords (`ideas`) and ads:keyword-metrics (`keywords`).
+function printKeywordRows(d, key, title) {
+  const data = d || {};
+  const rows = Array.isArray(data[key]) ? data[key] : [];
+  if (!rows.length) {
+    console.log("Google returned nothing for this. Try broader seed keywords or another page.");
+    return;
+  }
+  const where = [data.country, data.language].filter(Boolean).join("/");
+  console.log(`${title} (${rows.length})${where ? `, ${where}` : ""}${data.cached ? " (cached)" : ""}`);
+  console.log("─".repeat(40));
+  rows.forEach((k, i) => {
+    const searches = Number(k.avg_monthly_searches || 0).toLocaleString("en-US");
+    const competition = `${k.competition || "unspecified"}${k.competition_index != null ? ` (${k.competition_index})` : ""}`;
+    const bid =
+      k.low_top_of_page_bid != null && k.high_top_of_page_bid != null
+        ? `, top-of-page bid ${Number(k.low_top_of_page_bid).toFixed(2)} to ${Number(k.high_top_of_page_bid).toFixed(2)}`
+        : "";
+    const variants = Array.isArray(k.close_variants) && k.close_variants.length ? `, close variants: ${k.close_variants.join(", ")}` : "";
+    console.log(`#${i + 1}  ${k.keyword}: ${searches} searches a month, competition ${competition}${bid}${variants}`);
+  });
+  console.log("\nBids are in the ad account's currency. Read-only: nothing was made and no money is involved.");
+}
+
+const AD_NETWORK_STATE_WORDS = {
+  live: "live",
+  preview: "preview (open to your organisation ahead of the rest)",
+  coming_soon: "coming soon (no new ads; campaigns that run can still be paused or deleted)",
+};
+
+async function cmdAdsCapabilities(config, flags) {
+  const result = await apiRequest(config, "GET", "/ads/capabilities");
+  handleAdsResult(result, flags, (d) => {
+    const data = d || {};
+    const open = Array.isArray(data.create_networks) ? data.create_networks : [];
+    console.log(`New ads can be made on: ${open.join(", ") || "none yet"}`);
+    const states = data.network_states && typeof data.network_states === "object" ? data.network_states : {};
+    if (Object.keys(states).length) {
+      console.log("Networks:");
+      for (const [network, state] of Object.entries(states)) {
+        console.log(`  ${network}: ${AD_NETWORK_STATE_WORDS[state] || state}`);
+      }
+    }
+    for (const n of Array.isArray(data.networks) ? data.networks : []) {
+      console.log("");
+      console.log(`${n.label || n.key} (${n.key})${n.runs_on ? `: ${n.runs_on}` : ""}`);
+      if (n.identity) console.log(`  Runs as: ${n.identity}`);
+      const goals = Object.entries(n.goals || {})
+        .map(([goal, v]) => `${goal}${v && v.ok === false ? " (no)" : v && v.ok === "approx" ? " (close match)" : ""}${v && v.needsVideo ? " (video)" : ""}`)
+        .join(", ");
+      if (goals) console.log(`  Goals: ${goals}`);
+      const text = n.text || {};
+      const primary = text.primary_text || {};
+      const headline = text.headline || {};
+      console.log(
+        `  Text: primary ${primary.max ?? "?"} characters${primary.noEmoji ? " (no emoji)" : ""}, headline ${headline.field === false ? "none" : `${headline.max ?? "?"} characters`}`
+      );
+      console.log(`  Buttons: ${n.no_cta ? "none (website card)" : (n.ctas || []).join(", ") || "none"}`);
+      if (Array.isArray(n.extra_fields) && n.extra_fields.length) console.log(`  Also needs: ${n.extra_fields.join(", ")}`);
+      const minimum = n.min_daily_budget || {};
+      if (minimum.default != null) {
+        console.log(`  Lowest daily amount: ${minimum.default}${minimum.byCurrency ? " (depends on the currency)" : ""}`);
+      }
+      if (n.min_duration_days > 1) console.log(`  Shortest run: ${n.min_duration_days} days`);
+      if (n.spend_note) console.log(`  Spend: ${n.spend_note}`);
+      if (n.review) console.log(`  Review: ${n.review}`);
+    }
+    console.log("\n--json gives every rule: media sizes and lengths, text limits, goals per network.");
+  });
+}
+
+async function cmdAdsDraftDefaults(config, flags) {
+  const result = await apiRequest(config, "GET", "/ads/drafts/defaults");
+  handleAdsResult(result, flags, (d) => {
+    const data = d || {};
+    const countries = Array.isArray(data.countries) ? data.countries : [];
+    const from =
+      data.countries_source === "followers" ? " (where the Instagram followers are)" : data.countries_source === "timezone" ? " (the timezone of the user)" : "";
+    console.log(`Countries: ${countries.join(", ") || "none, ask the person"}${countries.length ? from : ""}`);
+    if (Array.isArray(data.follower_share) && data.follower_share.length) {
+      console.log(
+        `Follower share: ${data.follower_share.map((f) => `${f.country} ${Math.round(Number(f.share) * (Number(f.share) <= 1 ? 100 : 1))}%`).join(", ")}`
+      );
+    }
+    console.log(`Currency: ${data.currency || "(none)"}${data.currency_source === "ad_account" ? " (the selected Meta ad account)" : ""}`);
+    console.log(`New ads can be made on: ${(data.create_networks || []).join(", ") || "none yet"}`);
+    console.log("\nSuggestions only: show them to the person and use them only after they agree.");
+  });
+}
+
+// What an agent says and does after a draft is saved.
+function printAdDraftHandOff(d) {
+  console.log(
+    `\nIt is a DRAFT: no money is spent and nothing exists on any ad network. Give the person the review link: they see the ad per placement, connect the ad account and start it there. Only when they ask you to start it here and have confirmed the daily amount, the days and the networks: ads:attach-account ${d.group_id} --platform <network> --ad-account-id <id>, then ads:launch-draft ${d.group_id} --confirm-budget <amount>.`
+  );
+}
+
+async function cmdAdsCreateDraft(config, flags) {
+  const body = buildAdDraftBody(flags, "ads:create-draft");
+
+  const result = await apiRequest(config, "POST", "/ads/drafts", body);
+  handleAdsResult(result, flags, (d) => {
+    console.log("Ad draft saved.");
+    console.log(formatAdDraft(d));
+    printAdDraftHandOff(d);
+  });
+}
+
+async function cmdAdsDraft(config, flags, positional) {
+  const groupId = positional[0];
+  if (!groupId) exitWithError("Usage: omnisocials ads:draft <group-id>");
+
+  const result = await apiRequest(config, "GET", `/ads/drafts/${encodeURIComponent(groupId)}`);
+  handleAdsResult(result, flags, (d) => console.log(formatAdDraft(d)));
+}
+
+async function cmdAdsUpdateDraft(config, flags, positional) {
+  const groupId = positional[0];
+  if (!groupId) {
+    exitWithError(
+      "Usage: omnisocials ads:update-draft <group-id> (--draft-json '<json>' | --draft-file <path> | the draft flags)\nReplaces the WHOLE draft. Easiest: ads:draft <group-id> --json > draft.json, change the file, then pass --draft-file draft.json (flags go over the file)."
+    );
+  }
+  const body = buildAdDraftBody(flags, "ads:update-draft");
+
+  const result = await apiRequest(config, "PUT", `/ads/drafts/${encodeURIComponent(groupId)}`, body);
+  handleAdsResult(result, flags, (d) => {
+    console.log("Ad draft saved.");
+    console.log(formatAdDraft(d));
+    printAdDraftHandOff(d);
+  });
+}
+
+async function cmdAdsDeleteDraft(config, flags, positional) {
+  const groupId = positional[0];
+  if (!groupId) exitWithError("Usage: omnisocials ads:delete-draft <group-id>");
+
+  const result = await apiRequest(config, "DELETE", `/ads/drafts/${encodeURIComponent(groupId)}`);
+  handleAdsResult(result, flags, () => {
+    console.log("Ad draft deleted. Nothing existed on any ad network, so nothing else changed.");
+  });
+}
+
+async function cmdAdsAttachAccount(config, flags, positional) {
+  const groupId = positional[0];
+  if (!groupId || flags.platform === undefined || flags["ad-account-id"] === undefined) {
+    exitWithError(
+      "Usage: omnisocials ads:attach-account <group-id> --platform meta|pinterest|tiktok|linkedin|x|google --ad-account-id <id>\nThe ad account must be connected and selected for spending in the OmniSocials web app (see ads:accounts)."
+    );
+  }
+  const body = {
+    platform: pickOneOf("--platform", flags.platform, AD_NETWORKS),
+    ad_account_id: parseAdId("--ad-account-id", flags["ad-account-id"]),
+  };
+
+  const result = await apiRequest(config, "POST", `/ads/drafts/${encodeURIComponent(groupId)}/account`, body);
+  handleAdsResult(result, flags, (d) => {
+    console.log(`Ad account ${body.ad_account_id} attached to the ${body.platform} network of the draft. Nothing spends until the draft is started.`);
+    console.log(formatAdDraft(d));
+    const changed = d.currency_changed;
+    if (changed) {
+      console.log(
+        `\nThe ${changed.platform} amount is now in ${changed.to}, the account's currency (it was ${changed.from}). Tell the person before they confirm the amount.`
+      );
+    }
+  });
+}
+
+// --confirm-budgets meta=10,tiktok=20 or 51=10,52=20: the daily amount the
+// person confirmed per network, or per campaign id of the draft.
+function parseConfirmBudgets(flag, value) {
+  const usage = `${flag} takes <network or campaign id>=<amount> pairs, e.g. ${flag} meta=10,tiktok=20`;
+  const pairs = splitComma(value === true ? "" : String(value));
+  if (!pairs || !pairs.length) exitWithError(usage);
+  return pairs.map((pair) => {
+    const parts = pair.split("=").map((s) => s.trim());
+    if (parts.length !== 2 || !parts[0] || !parts[1]) exitWithError(usage);
+    const [key, amount] = parts;
+    if (!/^\d+$/.test(key) && !AD_NETWORKS.includes(key)) {
+      exitWithError(`${flag}: "${key}" is not a network (${AD_NETWORKS.join("|")}) or a campaign id`);
+    }
+    return { key, amount: parseAdAmount(`${flag} ${key}=`, amount) };
+  });
+}
+
+async function cmdAdsLaunchDraft(config, flags, positional) {
+  const groupId = positional[0];
+  const single = flags["confirm-budget"];
+  const perNetwork = flags["confirm-budgets"];
+  if (!groupId || (single === undefined && perNetwork === undefined)) {
+    exitWithError(
+      "Usage: omnisocials ads:launch-draft <group-id> (--confirm-budget <daily amount> | --confirm-budgets meta=10,tiktok=20)\nTHIS STARTS REAL AD SPEND on every ready network of the draft. First show the person the networks, the daily amount of each with its currency, the days and the total. Pass only the amounts they confirmed; never fill them in yourself."
+    );
+  }
+  if (single !== undefined && perNetwork !== undefined) {
+    exitWithError("Pass --confirm-budget (one daily amount for every network) or --confirm-budgets (per network), not both.");
+  }
+  const confirmAll = single !== undefined ? parseAdAmount("--confirm-budget", single) : undefined;
+  const confirmPairs = perNetwork !== undefined ? parseConfirmBudgets("--confirm-budgets", perNetwork) : undefined;
+
+  // Read the draft first: the plan below shows each network's own amount and
+  // currency, and nothing is sent when a confirmation does not match.
+  const read = await apiRequest(config, "GET", `/ads/drafts/${encodeURIComponent(groupId)}`);
+  if (read.error) handleAdsResult(read, flags);
+  const draft = read.data || {};
+  const campaigns = Array.isArray(draft.campaigns) ? draft.campaigns : [];
+
+  const perId = {};
+  for (const { key, amount } of confirmPairs || []) {
+    const isId = /^\d+$/.test(key);
+    const c = campaigns.find((x) => (isId ? String(x.id) === key : x.platform === key));
+    if (!c) {
+      exitWithError(
+        `--confirm-budgets: this draft has no ${isId ? `campaign ${key}` : `${key} network`}. It has: ${campaigns.map((x) => `${x.platform} (campaign ${x.id})`).join(", ") || "no networks"}.`
+      );
+    }
+    perId[String(c.id)] = amount;
+  }
+  const confirmedFor = (c) => (confirmPairs ? perId[String(c.id)] : confirmAll);
+
+  const startable = campaigns.filter(draftCampaignCanStart);
+  if (!startable.length) exitWithError(`Nothing left to start in draft ${groupId}: every network has started already.`);
+  const ready = startable.filter(draftCampaignReady);
+  const days = draft.schedule && draft.schedule.duration_days;
+  const plan = [
+    `About to start draft ${draft.group_id || groupId}${draft.name ? ` ("${draft.name}")` : ""}, ${days ? `${days} days after the start` : "with no end date (it spends until it is stopped)"}:`,
+  ];
+  for (const c of startable) {
+    if (draftCampaignReady(c)) plan.push(`  ${describeDraftNetwork(c)}`);
+    else plan.push(`  ${c.platform} (campaign ${c.id}): does not start, ${draftNetworkIssues(c).join("; ") || "not ready"}`);
+  }
+  if (!ready.length) {
+    exitWithError(`${plan.join("\n")}\nNo network of this draft is ready to start. Nothing was sent. Fix what the lines say (ads:draft ${groupId} shows it all).`);
+  }
+  const wrong = ready.filter((c) => {
+    const confirmed = confirmedFor(c);
+    return confirmed === undefined || Number(confirmed) !== Number(c.budget && c.budget.amount);
+  });
+  if (wrong.length) {
+    const lines = wrong.map((c) =>
+      confirmedFor(c) === undefined
+        ? `${c.platform} (campaign ${c.id}) is ready at ${describeDraftAmount(c.budget)}, but no amount was confirmed for it.`
+        : `${c.platform} (campaign ${c.id}) runs at ${describeDraftAmount(c.budget)}, not ${confirmedFor(c)}.`
+    );
+    const pairs = ready.map((c) => `${c.platform}=${c.budget ? c.budget.amount : "?"}`).join(",");
+    exitWithError(
+      `${plan.join("\n")}\n${lines.join("\n")}\nNothing was started. After the person confirms each network's own amount, pass them per network: --confirm-budgets ${pairs}`
+    );
+  }
+  // One total per currency: daily, and over the days when there is an end.
+  const totals = new Map();
+  for (const c of ready) {
+    const currency = (c.budget && c.budget.currency) || "";
+    totals.set(currency, (totals.get(currency) || 0) + Number(c.budget.amount));
+  }
+  const totalWords = [...totals.entries()].map(([currency, sum]) => {
+    const daily = `${`${roundMoney(sum)} ${currency}`.trim()} a day`;
+    return days ? `${daily}, ${`${roundMoney(sum * days)} ${currency}`.trim()} over ${days} days` : `${daily} until it is stopped`;
+  });
+  plan.push(
+    `Total: ${totalWords.join(" and ")} on ${ready.length} network${ready.length === 1 ? "" : "s"}. This starts real ad spend.`
+  );
+  printAdsNotice(flags, plan.join("\n"));
+
+  const body = confirmPairs ? { confirm_budget_amounts: perId } : { confirm_budget_amount: confirmAll };
+  const result = await apiRequest(config, "POST", `/ads/drafts/${encodeURIComponent(groupId)}/launch`, body);
+  handleAdsResult(result, flags, (d) => {
+    const results = d && Array.isArray(d.results) ? d.results : [];
+    const started = results.filter((r) => r.ok);
+    console.log(`Started ${started.length} of ${results.length} network${results.length === 1 ? "" : "s"}.`);
+    console.log("─".repeat(40));
+    for (const r of results) {
+      console.log(
+        r.ok
+          ? `  ${r.platform} (campaign ${r.campaign_id}): started, in the network's ad review`
+          : `  ${r.platform} (campaign ${r.campaign_id}): not started, ${describeAdTargetError(r)}`
+      );
+    }
+    if (started.length) {
+      console.log(
+        "\nThe ads run once each network approves them, usually within 24 hours. Pause a network any time with: omnisocials ads:pause <campaign id>"
+      );
+    }
+    if (results.length > started.length) {
+      console.log(
+        `A network that did not start spends nothing. Fix what its line says and run ads:launch-draft ${groupId} again: it starts only the networks that have not started.`
+      );
+    }
+  });
+}
+
 // --- Webhooks ---
 
 // Every event the API accepts in --events. post.approved / post.rejected fire
 // when the review of a post in an approval workflow ends; their payload
 // carries data.approval { status, decided_by, reason } and an empty targets
-// array. The API validates the list (400 on anything else), the CLI only
-// prints it.
+// array. ad.status_changed fires on every status change of an ad campaign
+// (pending_review to active, or to rejected); its data is the campaign:
+// campaign_id, name, platform, campaign_type, status, previous_status,
+// external_campaign_id, budget. The API validates the list (400 on anything
+// else), the CLI only prints it.
 const WEBHOOK_EVENTS = [
   "post.scheduled",
   "post.published",
   "post.failed",
   "post.approved",
   "post.rejected",
+  "ad.status_changed",
 ];
 
 async function cmdWebhooksList(config, flags) {
@@ -3536,7 +4927,7 @@ async function cmdWebhooksRotateSecret(config, flags, positional) {
 function showHelp() {
   console.log(`OmniSocials CLI v${VERSION}
 
-Manage social media across 13 platforms from the command line.
+Manage social media across 13 platforms, and run ads on 6 ad networks, from the command line.
 
 CHANNELS
   instagram, facebook, linkedin (profile), linkedin_page (company page),
@@ -3622,9 +5013,56 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:like <message-id>        Like a comment on your post as the Page/account (Facebook, LinkedIn Page, TikTok; Facebook: Like only); --unlike removes it (inbox:write)
   inbox:delete <message-id>      Delete a comment from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
 
+ADS (real money: needs the opt-in ads:read / ads:write scopes. Boosts, campaigns and drafts are DRAFTS that spend nothing; only ads:activate, ads:activate-multi and ads:launch-draft start spend, and only with --confirm-budget)
+  ads:accounts                   Connected ad accounts: id, network, currency, payment method, selected for spending (connect and select them in the web app)
+  ads:campaigns                  List campaigns [--status draft|pending_review|active|rejected|paused|completed|error --platform meta|pinterest|tiktok|linkedin|x|google --type campaign|boost --limit <1-100> --offset]
+  ads:campaign <id>              One campaign: budget, status, schedule, targeting, latest spend, impressions, clicks, ctr
+  ads:suggestions                Organic posts beating the workspace median: boost candidates (read-only)
+  ads:overview                   Ad accounts, campaigns by status, total spend, impressions and clicks
+  ads:boost                      Boost a published post as a DRAFT [--post-id --ad-account-id --budget <amount> --currency <ISO> (all required) --budget-type daily|lifetime --objective --name --start --end --countries NL,BE --targeting '<json>' --spark-code (TikTok, required there) --link (TikTok traffic) --headlines --descriptions --logo-url (Google, required there) --long-headlines --business-name --landing-page-url --creative-json '<json>']
+  ads:boost-multi                Boost ONE post on up to 10 ad accounts, one DRAFT each [--post-id --ad-account-ids <id,id> + the ads:boost flags]. The budget applies to every account: total = budget x accounts
+  ads:create-campaign            A DRAFT campaign without ads, which cannot start (a new ad is ads:create-draft) [--ad-account-id --name --budget --currency --budget-type --objective --start --end --countries --targeting]
+  ads:update-campaign <id>       Change name, budget, schedule or targeting [--name --budget --currency --budget-type --start --end --countries --targeting --confirm-budget <new amount> (needed to RAISE the budget of a campaign that runs)]
+  ads:activate <id>              START REAL AD SPEND on one campaign [--confirm-budget <amount> (required; must equal the campaign's budget)]. Prints the amount and currency first
+  ads:activate-multi             START REAL AD SPEND on up to 10 campaigns [--ids <id,id> --confirm-budget <amount> (required; must equal every budget)]. Prints the total first
+  ads:pause <id>                 Pause a campaign: spend stops (always safe)
+  ads:resume <id>                Resume a paused campaign: spend starts again (confirm with the person first)
+  ads:delete-campaign <id>       Delete a campaign, on the ad network too; cannot be undone (a campaign that spent keeps its spend in ads:overview)
+  ads:capabilities               What each network accepts for a new ad, create_networks, and network_states (live, preview, coming_soon)
+  ads:draft-defaults             Suggested countries and currency for a new ad (show them to the person, never use them silently)
+  ads:create-draft               A NEW ad (its own picture or video, text, button, link) as a DRAFT on one or more networks [--draft-json '<json>' | --draft-file <path>, and/or the AD DRAFT FLAGS below]
+  ads:draft <group-id>           A draft: per network the daily amount, ad account and what still stops it, plus the review link
+  ads:update-draft <group-id>    Replace the WHOLE draft (same body and flags as ads:create-draft; the output of ads:draft <group-id> --json works as --draft-file)
+  ads:delete-draft <group-id>    Delete a draft that has not started
+  ads:attach-account <group-id>  Use a connected, selected ad account for one network of a draft [--platform <network> --ad-account-id <id>]
+  ads:launch-draft <group-id>    START REAL AD SPEND on every ready network of a draft [--confirm-budget <daily amount> | --confirm-budgets meta=10,tiktok=20 (network or campaign id = amount)]. Prints the plan and the total first
+  ads:keywords                   Google keyword ideas: monthly searches, competition, bid range (read-only, free) [--keywords "a,b" (up to 20) and/or --url <page> --country US --language en --limit <1-500> --ad-account-id]
+  ads:keyword-metrics            Exact Google metrics for your own list [--keywords "a,b" (1-200, required) --country --language --ad-account-id]
+
+AD DRAFT FLAGS (ads:create-draft / ads:update-draft; they go over the same fields of --draft-json / --draft-file)
+  --platforms <a,b>              Networks: meta, pinterest, tiktok, linkedin, x, google (open ones: ads:capabilities). tiktok=20 gives one network its own daily amount
+  --objective <goal>             traffic, engagement, awareness or video_views
+  --budget <amount>              Daily amount PER NETWORK in major units (10 = 10 EUR); the person must have said it
+  --currency <ISO>               Currency; it moves to the ad account's currency once an account is attached
+  --days <1-90> | --no-end       How long the ad runs after it starts (one of the two is required)
+  --countries <a,b>              ISO country codes (ads:draft-defaults suggests some; confirm them with the person)
+  --age-min <13-65> --age-max <13-65> --genders male|female   Limit the audience (turns the automatic audience off)
+  --placements automatic|feeds   Meta only: automatic (feeds, Stories, Reels) or feeds only
+  --name "<name>"                Campaign name
+  One ad (two or more: put them in --draft-json / --draft-file as "ads"):
+  --media-url <url>              The picture or video, a public https URL (media:upload first); --media-type image|video when the name does not say it
+  --width --height --duration --thumbnail-url   Its size, video length in seconds and video cover (Meta, Pinterest and TikTok need a cover)
+  --primary-text "<text>"        The ad text (required; limits per network in ads:capabilities, TikTok 100 without emoji)
+  --primary-text-b "<text>"      A second text to test against the first (runs as a second ad)
+  --headline --description --cta <button> --link <url>   --link is required. Buttons: learn_more, shop_now, sign_up, book_now, contact_us, order_now, get_offer, get_quote, subscribe, apply_now, download, watch_more
+  --overrides-json '<json>'      Text per network where the base does not fit: {"google":{"headline":"Autumn trips, 3 spots"}}
+  --google-business-name --google-logo-url   Google only (required there): business name (25 chars), square logo URL
+  --stories-reels-url <url>      Meta only: a second, upright 9:16 file (1080 x 1920) for Stories and Reels, the same kind as --media-url; not for engagement [--stories-reels-width --stories-reels-height --stories-reels-thumbnail-url]
+  --ad-name --ad-key             The ad's name, and its key to keep it on ads:update-draft
+
 WEBHOOKS
   webhooks:list                  List webhooks
-  webhooks:create                Create webhook [--url --events] (events: post.scheduled, post.published, post.failed, post.approved, post.rejected)
+  webhooks:create                Create webhook [--url --events] (events: post.scheduled, post.published, post.failed, post.approved, post.rejected, ad.status_changed)
   webhooks:get <id>              Get webhook details
   webhooks:update <id>           Update webhook [--url --events --active]
   webhooks:delete <id>           Delete a webhook
@@ -3761,6 +5199,10 @@ EXAMPLES
   omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --message-id <message-id> --next
   omnisocials posts:list --status scheduled --json
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
+  omnisocials ads:boost --post-id 12345 --ad-account-id 7 --budget 10 --currency EUR --countries NL,BE --end 2026-12-01T00:00:00Z
+  omnisocials ads:activate 42 --confirm-budget 10
+  omnisocials ads:create-draft --platforms meta --objective traffic --budget 10 --currency EUR --days 14 --countries NL,BE --media-url "https://cdn.example.com/trip.jpg" --primary-text "Five days in the valley." --headline "Autumn trips" --cta book_now --link "https://example.com/autumn"
+  omnisocials ads:launch-draft <group-id> --confirm-budget 10
 
 Learn more: https://docs.omnisocials.com`);
 }
@@ -3819,6 +5261,30 @@ const COMMANDS = {
   "inbox:hide": { handler: cmdInboxHide },
   "inbox:like": { handler: cmdInboxLike },
   "inbox:delete": { handler: cmdInboxDelete },
+  "ads:accounts": { handler: cmdAdsAccounts },
+  "ads:campaigns": { handler: cmdAdsCampaigns },
+  "ads:campaign": { handler: cmdAdsCampaign },
+  "ads:suggestions": { handler: cmdAdsSuggestions },
+  "ads:overview": { handler: cmdAdsOverview },
+  "ads:boost": { handler: cmdAdsBoost },
+  "ads:boost-multi": { handler: cmdAdsBoostMulti },
+  "ads:create-campaign": { handler: cmdAdsCreateCampaign },
+  "ads:update-campaign": { handler: cmdAdsUpdateCampaign },
+  "ads:activate": { handler: cmdAdsActivate },
+  "ads:activate-multi": { handler: cmdAdsActivateMulti },
+  "ads:pause": { handler: cmdAdsPause },
+  "ads:resume": { handler: cmdAdsResume },
+  "ads:delete-campaign": { handler: cmdAdsDeleteCampaign },
+  "ads:capabilities": { handler: cmdAdsCapabilities },
+  "ads:draft-defaults": { handler: cmdAdsDraftDefaults },
+  "ads:create-draft": { handler: cmdAdsCreateDraft },
+  "ads:draft": { handler: cmdAdsDraft },
+  "ads:update-draft": { handler: cmdAdsUpdateDraft },
+  "ads:delete-draft": { handler: cmdAdsDeleteDraft },
+  "ads:attach-account": { handler: cmdAdsAttachAccount },
+  "ads:launch-draft": { handler: cmdAdsLaunchDraft },
+  "ads:keywords": { handler: cmdAdsKeywords },
+  "ads:keyword-metrics": { handler: cmdAdsKeywordMetrics },
   "webhooks:list": { handler: cmdWebhooksList },
   "webhooks:create": { handler: cmdWebhooksCreate },
   "webhooks:get": { handler: cmdWebhooksGet },

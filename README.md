@@ -8,6 +8,8 @@ Works with Claude Code, Cursor, Windsurf, GitHub Copilot, Codex, Gemini CLI, and
 
 Instagram, Facebook, LinkedIn (personal profile + company page), YouTube, TikTok, X (Twitter), Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram (channels and groups), Discord (channels)
 
+Ad networks: Meta (Facebook and Instagram), Pinterest, TikTok, LinkedIn, X and Google, on the ad accounts connected in OmniSocials.
+
 ## Setup
 
 ### 1. Install the skill
@@ -43,7 +45,7 @@ Ask your AI agent things like:
 
 ## Commands
 
-56 commands covering the full v1 API:
+81 commands covering the full v1 API:
 
 | Category | Commands |
 |----------|----------|
@@ -59,6 +61,7 @@ Ask your AI agent things like:
 | **Pinterest products** | `pinterest:products`, `pinterest:validate` |
 | **Analytics** | `analytics:post`, `analytics:posts`, `analytics:overview`, `analytics:accounts`, `analytics:best-times` |
 | **Inbox** | `inbox:list`, `inbox:next`, `inbox:messages`, `inbox:read`, `inbox:reply`, `inbox:hide`, `inbox:like`, `inbox:delete` |
+| **Ads** | `ads:accounts`, `ads:campaigns`, `ads:campaign`, `ads:suggestions`, `ads:overview`, `ads:boost`, `ads:boost-multi`, `ads:create-campaign`, `ads:update-campaign`, `ads:activate`, `ads:activate-multi`, `ads:pause`, `ads:resume`, `ads:delete-campaign`, `ads:capabilities`, `ads:draft-defaults`, `ads:create-draft`, `ads:draft`, `ads:update-draft`, `ads:delete-draft`, `ads:attach-account`, `ads:launch-draft`, `ads:keywords`, `ads:keyword-metrics` |
 | **Webhooks** | `webhooks:list`, `webhooks:create`, `webhooks:get`, `webhooks:update`, `webhooks:delete`, `webhooks:rotate-secret` |
 
 ## Features
@@ -72,8 +75,9 @@ Ask your AI agent things like:
 - **Analytics**: Post-level, bulk, workspace overview, account-level metrics, and best posting times
 - **Social inbox**: Read and reply to DMs, comments, and mentions
 - **Comment to DM**: answer a keyword in an Instagram or Facebook Page comment with a DM, once per person, with a public reply under the comment; on a new post (`--dm-keywords`, `--dm-message`) or an existing one (`automations:create`), with the activity per person (`automations:events`). On X (`--platform x`) an automation answers a keyword in a DM to the account
+- **Ads**: boost a published post, or make a new ad with its own picture or video on one or more ad networks. Everything starts as a draft that spends nothing; spend starts only with `--confirm-budget`, the amount the person confirmed, and the CLI prints the amount, currency and total before it sends it. Needs an API key with Ads switched on
 - **Approvals**: Send a post through an approval workflow, approve or reject it, and read the review (who decided, the reason, the comments)
-- **Webhooks**: Get notified when posts are scheduled, published, fail, or are approved or rejected in an approval workflow
+- **Webhooks**: Get notified when posts are scheduled, published, fail, or are approved or rejected in an approval workflow, and when an ad campaign changes status
 - **Zero dependencies**: Uses Node.js 18+ built-in fetch
 
 ## Alternative: MCP Server
