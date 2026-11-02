@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.36.0");
+    expect(stdout).toContain("OmniSocials CLI v1.37.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -3709,6 +3709,319 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(bad.exitCode).not.toBe(0);
         expect(bad.stderr).toContain('--dm-platforms: "x" is not one of instagram|facebook');
         expect(calls).toHaveLength(0);
+      }
+    );
+  });
+});
+
+describe("Post tags (mock API)", () => {
+  const auth = (baseUrl) => ["--api-key", MOCK_KEY, "--base-url", baseUrl];
+  const hook = { id: 12, name: "Question hook", color: "blue", created_at: "2026-11-02T08:00:00Z" };
+  const tutorial = { id: 13, name: "Tutorial", color: "green", created_at: "2026-11-02T08:00:00Z" };
+
+  it("--help lists the tags commands, analytics:tags, --tags and --tag", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    for (const cmd of ["tags:list", "tags:create", "tags:update <id>", "tags:delete <id>", "tags:apply", "analytics:tags"]) {
+      expect(stdout).toContain(cmd);
+    }
+    expect(stdout).toContain('--tags "<a,b>"');
+    expect(stdout).toContain('--tag "<name or id,...>"');
+    expect(stdout).toContain("--min-posts");
+    expect(stdout).not.toContain("--group");
+  });
+
+  it("tags:list prints id, name and color", async () => {
+    await withMockServer(
+      () => ({ json: { data: [hook, tutorial] } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["tags:list", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/tags");
+        expect(stdout).toContain("Tags (2)");
+        expect(stdout).toContain("ID: 12  Question hook  (blue)");
+        expect(stdout).toContain("ID: 13  Tutorial  (green)");
+      }
+    );
+  });
+
+  it("tags:create sends name and color; without --name it refuses before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: hook } }),
+      async (baseUrl, calls) => {
+        const bad = await run(["tags:create", "--color", "blue", ...auth(baseUrl)]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("Usage: omnisocials tags:create");
+        expect(calls).toHaveLength(0);
+
+        const { stdout, exitCode } = await run(["tags:create", "--name", "Question hook", "--color", "blue", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/tags");
+        expect(calls[0].body).toEqual({ name: "Question hook", color: "blue" });
+        expect(stdout).toContain("ID: 12  Question hook  (blue)");
+      }
+    );
+  });
+
+  it("tags:update sends only the fields given and needs an id and a field", async () => {
+    await withMockServer(
+      () => ({ json: { data: { ...hook, name: "Question opener" } } }),
+      async (baseUrl, calls) => {
+        const bad = await run(["tags:update", "12", ...auth(baseUrl)]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain("Usage: omnisocials tags:update <id>");
+        expect(calls).toHaveLength(0);
+
+        const { stdout, exitCode } = await run(["tags:update", "12", "--name", "Question opener", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/tags/12");
+        expect(calls[0].body).toEqual({ name: "Question opener" });
+        expect(stdout).toContain("Question opener");
+      }
+    );
+  });
+
+  it("tags:delete prints how many posts lost the tag", async () => {
+    await withMockServer(
+      () => ({ json: { data: { tag: hook, posts_untagged: 14 } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["tags:delete", "12", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("DELETE");
+        expect(calls[0].path).toBe("/tags/12");
+        expect(stdout).toContain('Tag "Question hook" deleted; it was removed from 14 posts.');
+      }
+    );
+  });
+
+  it("tags:apply sends post ids and the comma lists, keeps names with spaces whole, and prints each post", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: {
+            updated: 2,
+            posts: [
+              { id: "1024", tags: [hook, tutorial] },
+              { id: "1025", tags: [] },
+            ],
+            not_found: ["999"],
+          },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "tags:apply",
+          "--posts",
+          "1024, 1025,999",
+          "--add",
+          "Question hook, Tutorial",
+          "--remove",
+          "Old tag",
+          ...auth(baseUrl),
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/tags/apply");
+        expect(calls[0].body).toEqual({
+          post_ids: ["1024", "1025", "999"],
+          add: ["Question hook", "Tutorial"],
+          remove: ["Old tag"],
+        });
+        expect(stdout).toContain("Tags changed on 2 posts.");
+        expect(stdout).toContain("1024: Question hook, Tutorial");
+        expect(stdout).toContain("1025: (no tags)");
+        expect(stdout).toContain("Not found (not posts of this workspace, left alone): 999");
+      }
+    );
+  });
+
+  it("tags:apply: a repeated --set keeps a comma inside a name, --set null clears every tag", async () => {
+    await withMockServer(
+      () => ({ json: { data: { updated: 1, posts: [{ id: "1024", tags: [] }], not_found: [] } } }),
+      async (baseUrl, calls) => {
+        const repeated = await run(["tags:apply", "--posts", "1024", "--set", "Hooks, short", "--set", "Tutorial", ...auth(baseUrl)]);
+        expect(repeated.exitCode).toBe(0);
+        expect(calls[0].body.set).toEqual(["Hooks, short", "Tutorial"]);
+
+        const cleared = await run(["tags:apply", "--posts", "1024", "--set", "null", ...auth(baseUrl)]);
+        expect(cleared.exitCode).toBe(0);
+        expect(calls[1].body).toEqual({ post_ids: ["1024"], set: [] });
+      }
+    );
+  });
+
+  it("tags:apply refuses a call without --posts, without tags to change, or with over 500 posts", async () => {
+    await withMockServer(
+      () => ({ json: { data: { updated: 0, posts: [], not_found: [] } } }),
+      async (baseUrl, calls) => {
+        const noPosts = await run(["tags:apply", "--add", "Tutorial", ...auth(baseUrl)]);
+        expect(noPosts.exitCode).not.toBe(0);
+        expect(noPosts.stderr).toContain("Usage: omnisocials tags:apply");
+        const noTags = await run(["tags:apply", "--posts", "1024", ...auth(baseUrl)]);
+        expect(noTags.exitCode).not.toBe(0);
+        expect(noTags.stderr).toContain("Give tags to add, remove or set.");
+        const many = Array.from({ length: 501 }, (_, i) => String(i + 1)).join(",");
+        const tooMany = await run(["tags:apply", "--posts", many, "--add", "Tutorial", ...auth(baseUrl)]);
+        expect(tooMany.exitCode).not.toBe(0);
+        expect(tooMany.stderr).toContain("at most 500 posts at a time (got 501)");
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("posts:create and posts:create-and-publish send --tags as a list; posts:update --tags null removes them", async () => {
+    await withMockServer(
+      (req) => ({
+        status: req.method === "PATCH" ? 200 : 201,
+        json: { data: { id: "p1", status: "draft", tags: req.method === "PATCH" ? [] : [hook, tutorial] } },
+      }),
+      async (baseUrl, calls) => {
+        const created = await run(["posts:create", "--text", "Why hooks fail", "--channels", "tiktok", "--tags", "Question hook,Tutorial", ...auth(baseUrl)]);
+        expect(created.exitCode).toBe(0);
+        expect(calls[0].body.tags).toEqual(["Question hook", "Tutorial"]);
+        expect(created.stdout).toContain("Tags: Question hook, Tutorial");
+
+        const published = await run(["posts:create-and-publish", "--text", "Hi", "--channels", "x", "--tags", "12", ...auth(baseUrl)]);
+        expect(published.exitCode).toBe(0);
+        expect(calls[1].path).toBe("/posts/create-and-publish");
+        expect(calls[1].body.tags).toEqual(["12"]);
+
+        const cleared = await run(["posts:update", "p1", "--tags", "null", ...auth(baseUrl)]);
+        expect(cleared.exitCode).toBe(0);
+        expect(calls[2].body).toEqual({ tags: null });
+        expect(cleared.stdout).toContain("Tags: none");
+
+        const bare = await run(["posts:create", "--text", "Hi", "--tags", ...auth(baseUrl)]);
+        expect(bare.exitCode).not.toBe(0);
+        expect(bare.stderr).toContain("--tags needs tag names or ids");
+        expect(calls).toHaveLength(3);
+      }
+    );
+  });
+
+  it("posts:list --tag sends the tag filter and prints the tags and an Instagram trial reel", async () => {
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            {
+              id: "p1",
+              status: "published",
+              content: { default: "Why hooks fail" },
+              accounts: ["instagram"],
+              tags: [hook, tutorial],
+              trial_reel: { strategy: "SS_PERFORMANCE" },
+              created_at: "2026-10-26T08:00:00Z",
+            },
+          ],
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["posts:list", "--tag", "Question hook, 13", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].query.get("tag")).toBe("Question hook,13");
+        expect(stdout).toContain("Tags: Question hook, Tutorial");
+        expect(stdout).toContain("IG trial reel: shared with followers when it performs well (SS_PERFORMANCE)");
+      }
+    );
+  });
+
+  it("analytics:overview --tag sends the tag filter", async () => {
+    await withMockServer(
+      () => ({ json: { period: "30d", data: { total_posts: 4, total_impressions: 900, total_engagement: 40 } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["analytics:overview", "--period", "30d", "--tag", "Tutorial", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/analytics/overview");
+        expect(calls[0].query.get("tag")).toBe("Tutorial");
+        expect(stdout).toContain("Tag: Tutorial");
+        expect(stdout).toContain("Total posts: 4");
+      }
+    );
+  });
+
+  it("analytics:tags sends its query and prints one table with vs normal, too few posts and the posts without a tag", async () => {
+    const row = (tag, extra) => ({
+      tag,
+      posts: 12,
+      measured: 10,
+      median_impressions: 4210.5,
+      engagement_rate: 5.43,
+      vs_normal: 0.38,
+      best_channel: "tiktok",
+      enough_posts: true,
+      ...extra,
+    });
+    await withMockServer(
+      () => ({
+        json: {
+          data: {
+            period: { start_date: "2026-08-01", end_date: "2026-11-02" },
+            platform: null,
+            min_posts: 5,
+            tags: [
+              row(hook),
+              row(tutorial, { vs_normal: -0.21, best_channel: null, engagement_rate: 3.1 }),
+              row({ id: 14, name: "Behind the scenes", color: "teal" }, { posts: 2, measured: 2, vs_normal: 0.9, enough_posts: false }),
+            ],
+            untagged: { posts: 40, measured: 38, median_impressions: 2500, engagement_rate: 4, vs_normal: 0, best_channel: null, enough_posts: true },
+            normals: { instagram: 1240, tiktok: 3400 },
+          },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "analytics:tags",
+          "--start-date",
+          "2026-08-01",
+          "--end-date",
+          "2026-11-02",
+          "--platform",
+          "tiktok",
+          "--min-posts",
+          "3",
+          ...auth(baseUrl),
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/analytics/tags");
+        expect(calls[0].query.get("start_date")).toBe("2026-08-01");
+        expect(calls[0].query.get("end_date")).toBe("2026-11-02");
+        expect(calls[0].query.get("platform")).toBe("tiktok");
+        expect(calls[0].query.get("min_posts")).toBe("3");
+        expect(stdout).toContain("Tags compared: 2026-08-01 to 2026-11-02, all channels");
+        expect(stdout).toMatch(/Question hook\s+12\s+10\s+4211\s+5\.4%\s+\+38%\s+tiktok/);
+        expect(stdout).toMatch(/Tutorial\s+12\s+10\s+4211\s+3\.1%\s+-21%\s+-/);
+        expect(stdout).toMatch(/Behind the scenes\s+2\s+2\s+4211\s+5\.4%\s+too few posts/);
+        expect(stdout).not.toContain("+90%");
+        expect(stdout).toMatch(/\(no tag\)\s+40\s+38\s+2500\s+4\.0%\s+0%/);
+        expect(stdout).toContain("Your normal (median impressions per post): instagram 1240 · tiktok 3400");
+        expect(stdout).not.toContain("Group");
+      }
+    );
+  });
+
+  it("analytics:tags refuses a --min-posts outside 1 to 50 before calling the API", async () => {
+    await withMockServer(
+      () => ({ json: { data: { tags: [] } } }),
+      async (baseUrl, calls) => {
+        const bad = await run(["analytics:tags", "--min-posts", "0", ...auth(baseUrl)]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain('--min-posts must be a whole number from 1 to 50 (got "0")');
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("hashtag-sets:create joins a repeated --tags into one list", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: 1, name: "Gym", hashtag_count: 3, preview: "#gym #fit #lift" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run(["hashtag-sets:create", "--name", "Gym", "--tags", "#gym #fit", "--tags", "#lift", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({ name: "Gym", hashtags: "#gym #fit #lift" });
       }
     );
   });

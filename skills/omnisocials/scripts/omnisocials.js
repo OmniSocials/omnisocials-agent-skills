@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.36.0";
+const VERSION = "1.37.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -138,9 +138,9 @@ async function apiRequest(config, method, apiPath, body, queryParams) {
 
 // Flags that may be given more than once. Their values are collected in an
 // array in the order given (one public-reply variation per --reply, one link
-// button per --discord-button). Every other flag keeps its last value when
-// repeated.
-const REPEATABLE_FLAGS = new Set(["reply", "dm-reply", "discord-button"]);
+// button per --discord-button, one tag name per --tags / --add / --remove /
+// --set). Every other flag keeps its last value when repeated.
+const REPEATABLE_FLAGS = new Set(["reply", "dm-reply", "discord-button", "tags", "add", "remove", "set"]);
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -740,6 +740,71 @@ function buildPostCommentDm(flags) {
   return automation;
 }
 
+// ─── Post Tags ──────────────────────────────────────────────────────────────
+
+// A tag labels posts inside OmniSocials only (it never goes to a platform):
+// by hook, format, series or campaign, to compare them later with
+// analytics:tags. Tags are flat: a tag is one name, no groups. Up to 20 tags
+// per post and 200 per workspace; the API picks a color when none is given.
+const TAG_COLORS = ["blue", "green", "orange", "red", "purple", "pink", "teal", "yellow", "brown", "gray"];
+const MAX_POSTS_PER_TAG_APPLY = 500;
+
+// --tags "Question hook,Tutorial" (and --add / --remove / --set on
+// tags:apply): tag names or ids, comma separated; quote the list when a name
+// has a space. Repeat the flag for one name per flag, so a name with a comma
+// stays whole (see REPEATABLE_FLAGS). Names match case-insensitively; a name
+// that does not exist yet becomes a tag where the API makes one (posts:create,
+// posts:update, tags:apply --add / --set). `allowNull`: the literal value null
+// sends null (posts:update --tags null removes every tag of the post).
+function parseTagRefs(flag, value, { allowNull = false } = {}) {
+  const refs = Array.isArray(value)
+    ? value.map((v) => (v === true ? "" : String(v).trim())).filter(Boolean)
+    : splitComma(value === true ? "" : String(value));
+  if (allowNull && refs && refs.length === 1 && refs[0] === "null") return null;
+  if (!refs || !refs.length) {
+    exitWithError(
+      `${flag} needs tag names or ids, comma separated, e.g. ${flag} "Question hook,Tutorial" (see tags:list)`
+    );
+  }
+  return refs;
+}
+
+// The `tag` filter of posts:list and analytics:overview: ids or names, comma
+// separated, a post matches when it has any of them. Unknown names answer
+// 404 tag_not_found (a filter never makes a tag).
+function parseTagFilter(flag, value) {
+  const refs = splitComma(requireValue(flag, value));
+  if (!refs || !refs.length) exitWithError(`${flag} needs a tag name or id (see tags:list)`);
+  return refs.join(",");
+}
+
+// A post's tags as one line ("Question hook, Tutorial"); posts carry them as
+// [{ id, name, color }].
+function tagNames(tags) {
+  if (!Array.isArray(tags)) return "";
+  return tags.map((t) => (t && typeof t === "object" ? t.name || `#${t.id}` : String(t))).join(", ");
+}
+
+// vs_normal is a fraction against the person's normal: 0.38 = 38% above.
+function formatVsNormal(v) {
+  if (v === null || v === undefined || !Number.isFinite(Number(v))) return "-";
+  const n = Math.round(Number(v) * 100);
+  return n > 0 ? `+${n}%` : `${n}%`;
+}
+
+// Columns padded to their widest cell; `right` = indexes of right-aligned
+// (number) columns.
+function printTable(headers, rows, right = new Set()) {
+  const widths = headers.map((h, i) => Math.max(h.length, ...rows.map((r) => String(r[i]).length)));
+  const line = (cells) =>
+    cells
+      .map((c, i) => (right.has(i) ? String(c).padStart(widths[i]) : String(c).padEnd(widths[i])))
+      .join("  ")
+      .trimEnd();
+  console.log(line(headers));
+  for (const r of rows) console.log(line(r));
+}
+
 // Assemble the request body shared by posts:create, posts:create-and-publish,
 // and posts:update. Centralised so all three stay in sync as the API grows.
 // `content` is only set when --text is given (update can omit it). Returns the
@@ -781,6 +846,11 @@ function buildPostBody(flags) {
   if (flags["hashtag-set"]) body.hashtag_set = flags["hashtag-set"];
   if (flags["hashtag-placement"]) body.hashtag_placement = flags["hashtag-placement"];
   if (flags["hashtag-platforms"]) body.hashtag_platforms = splitComma(flags["hashtag-platforms"]);
+
+  // Post tags: top-level `tags`, names or ids (see parseTagRefs). Replaces
+  // the post's tags on posts:update; null removes them all. A PATCH with only
+  // tags also works on a published post.
+  if (flags.tags !== undefined) body.tags = parseTagRefs("--tags", flags.tags, { allowNull: true });
 
   // Approval workflow — top-level; the post is created as in_approval and
   // publishes at --schedule once the workflow's last step approves it.
@@ -1088,6 +1158,19 @@ function formatPost(post, index) {
   }
   if (post.published_urls && Object.keys(post.published_urls).length) {
     lines.push(`    Published: ${Object.values(post.published_urls).join(", ")}`);
+  }
+  // Post tags (labels inside OmniSocials, never sent to a platform).
+  if (Array.isArray(post.tags) && post.tags.length) {
+    lines.push(`    Tags: ${tagNames(post.tags)}`);
+  }
+  // An Instagram Trial Reel: shown to non-followers first. The setting only;
+  // Instagram's API does not say whether it was later shared with followers.
+  if (post.trial_reel && typeof post.trial_reel === "object") {
+    const how =
+      post.trial_reel.strategy === "SS_PERFORMANCE"
+        ? "shared with followers when it performs well"
+        : "shared with followers by hand";
+    lines.push(`    IG trial reel: ${how} (${post.trial_reel.strategy || "MANUAL"})`);
   }
   // Multi-slide stories: one story per slide on the platform; published_urls
   // only carries slide 1, so list every slide here.
@@ -1677,6 +1760,8 @@ async function cmdPostsList(config, flags) {
     status: flags.status,
     limit: flags.limit,
     offset: flags.offset,
+    // --tag "Question hook,Tutorial": posts with any of these tags.
+    tag: flags.tag !== undefined ? parseTagFilter("--tag", flags.tag) : undefined,
   });
 
   handleResult(result, flags, (data) => {
@@ -1790,6 +1875,7 @@ async function cmdPostsCreate(config, flags) {
     console.log(`Status: ${data.status}`);
     const scheduledAt = data.schedule_at || data.scheduled_at;
     if (scheduledAt) console.log(`${data.status === "draft" ? "Planned for" : "Scheduled"}: ${scheduledAt}`);
+    if (Array.isArray(data.tags) && data.tags.length) console.log(`Tags: ${tagNames(data.tags)}`);
     if (data.app_url) console.log(`Open in OmniSocials: ${data.app_url}`);
     if (data.comment_dm_automation !== undefined) printCommentDm(data.comment_dm_automation);
     printWarnings(warnings);
@@ -1818,6 +1904,7 @@ async function cmdPostsCreateAndPublish(config, flags) {
     console.log(`Post created and publishing!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
+    if (Array.isArray(data.tags) && data.tags.length) console.log(`Tags: ${tagNames(data.tags)}`);
     if (data.app_url) console.log(`Open in OmniSocials: ${data.app_url}`);
     if (data.comment_dm_automation !== undefined) printCommentDm(data.comment_dm_automation);
     printWarnings(warnings);
@@ -1842,6 +1929,9 @@ async function cmdPostsUpdate(config, flags, positional) {
     console.log(`Status: ${data.status}`);
     const scheduledAt = data.schedule_at || data.scheduled_at;
     if (scheduledAt) console.log(`${data.status === "draft" ? "Planned for" : "Scheduled"}: ${scheduledAt}`);
+    if (body.tags !== undefined && Array.isArray(data.tags)) {
+      console.log(`Tags: ${data.tags.length ? tagNames(data.tags) : "none"}`);
+    }
     if (data.comment_dm_automation !== undefined) printCommentDm(data.comment_dm_automation);
     printWarnings(warnings);
   });
@@ -2306,9 +2396,13 @@ async function cmdHashtagSetsList(config, flags) {
   });
 }
 
+// --tags may be repeated (it is a repeatable flag for post tags); the hashtag
+// sets take the values as one space-separated list.
+const hashtagList = (value) => (Array.isArray(value) ? value.join(" ") : value);
+
 async function cmdHashtagSetsCreate(config, flags) {
   const name = flags.name;
-  const tags = flags.tags;
+  const tags = hashtagList(flags.tags);
   if (!name || !tags) {
     exitWithError(
       'Usage: omnisocials hashtag-sets:create --name "Fitness Brand" --tags "#fitness #gym #workout"'
@@ -2338,7 +2432,7 @@ async function cmdHashtagSetsUpdate(config, flags, positional) {
 
   const body = {};
   if (flags.name) body.name = flags.name;
-  if (flags.tags) body.hashtags = flags.tags;
+  if (flags.tags) body.hashtags = hashtagList(flags.tags);
 
   const result = await apiRequest(config, "PATCH", `/hashtag-sets/${id}`, body);
   handleResult(result, flags, (d) => {
@@ -2358,6 +2452,116 @@ async function cmdHashtagSetsDelete(config, flags, positional) {
   const result = await apiRequest(config, "DELETE", `/hashtag-sets/${id}`);
   handleResult(result, flags, () => {
     console.log("Hashtag set deleted. Posts that already used it keep their hashtags.");
+  });
+}
+
+// --- Post tags ---
+// Labels on posts inside OmniSocials (see parseTagRefs). posts:read lists,
+// posts:write changes.
+
+function formatTagRow(t) {
+  return `ID: ${t.id}  ${t.name}${t.color ? `  (${t.color})` : ""}`;
+}
+
+async function cmdTagsList(config, flags) {
+  const result = await apiRequest(config, "GET", "/tags");
+  handleResult(result, flags, (data) => {
+    const tags = Array.isArray(data) ? data : [];
+    if (!tags.length) {
+      console.log(
+        'No tags yet. Create one with tags:create --name "Question hook", or pass --tags on posts:create (a new name becomes a tag).'
+      );
+      return;
+    }
+    console.log(`Tags (${tags.length})`);
+    console.log("─".repeat(40));
+    for (const t of tags) console.log(formatTagRow(t));
+    console.log("");
+    console.log('Use the names with posts:create --tags, tags:apply and analytics:tags.');
+  });
+}
+
+async function cmdTagsCreate(config, flags) {
+  if (flags.name === undefined) {
+    exitWithError(`Usage: omnisocials tags:create --name "Question hook" [--color ${TAG_COLORS.join("|")}]`);
+  }
+  const body = { name: requireValue("--name", flags.name) };
+  if (flags.color !== undefined) body.color = requireValue("--color", flags.color);
+
+  const result = await apiRequest(config, "POST", "/tags", body);
+  handleResult(result, flags, (t) => {
+    console.log("Tag created!");
+    console.log(formatTagRow(t));
+    console.log(`Tag posts with: tags:apply --posts <id,id> --add "${t.name}"`);
+  });
+}
+
+async function cmdTagsUpdate(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id || (flags.name === undefined && flags.color === undefined)) {
+    exitWithError(`Usage: omnisocials tags:update <id> [--name "New name"] [--color ${TAG_COLORS.join("|")}]`);
+  }
+  const body = {};
+  if (flags.name !== undefined) body.name = requireValue("--name", flags.name);
+  if (flags.color !== undefined) body.color = requireValue("--color", flags.color);
+
+  const result = await apiRequest(config, "PATCH", `/tags/${encodeURIComponent(id)}`, body);
+  handleResult(result, flags, (t) => {
+    console.log("Tag updated! Every post with it shows the change.");
+    console.log(formatTagRow(t));
+  });
+}
+
+async function cmdTagsDelete(config, flags, positional) {
+  const id = flags.id || positional[0];
+  if (!id) exitWithError("Usage: omnisocials tags:delete <id>");
+
+  const result = await apiRequest(config, "DELETE", `/tags/${encodeURIComponent(id)}`);
+  handleResult(result, flags, (data) => {
+    const name = data && data.tag && data.tag.name ? `"${data.tag.name}"` : id;
+    const n = data && typeof data.posts_untagged === "number" ? data.posts_untagged : 0;
+    console.log(`Tag ${name} deleted; it was removed from ${n} post${n === 1 ? "" : "s"}. The posts themselves stay.`);
+  });
+}
+
+// tags:apply --posts <id,id> [--add ...] [--remove ...] [--set ...]: change
+// the tags of up to 500 posts at once, published ones included. --set
+// replaces a post's tags (--set null removes them all); --add and --remove
+// change only the tags named.
+async function cmdTagsApply(config, flags) {
+  const usage =
+    'Usage: omnisocials tags:apply --posts <id,id> [--add "Question hook,Tutorial"] [--remove "Old tag"] [--set "Only this"]';
+  if (flags.posts === undefined) exitWithError(usage);
+  const postIds = splitComma(flags.posts === true ? "" : String(flags.posts));
+  if (!postIds || !postIds.length) exitWithError(`--posts needs post ids, comma separated. ${usage}`);
+  if (postIds.length > MAX_POSTS_PER_TAG_APPLY) {
+    exitWithError(`tags:apply takes at most ${MAX_POSTS_PER_TAG_APPLY} posts at a time (got ${postIds.length})`);
+  }
+  if (flags.add === undefined && flags.remove === undefined && flags.set === undefined) {
+    exitWithError(`Give tags to add, remove or set. ${usage}`);
+  }
+
+  const body = { post_ids: postIds };
+  if (flags.add !== undefined) body.add = parseTagRefs("--add", flags.add);
+  if (flags.remove !== undefined) body.remove = parseTagRefs("--remove", flags.remove);
+  if (flags.set !== undefined) body.set = parseTagRefs("--set", flags.set, { allowNull: true }) || [];
+
+  const result = await apiRequest(config, "POST", "/tags/apply", body);
+  handleResult(result, flags, (data) => {
+    const posts = Array.isArray(data.posts) ? data.posts : [];
+    const updated = typeof data.updated === "number" ? data.updated : posts.length;
+    console.log(`Tags changed on ${updated} post${updated === 1 ? "" : "s"}.`);
+    const shown = posts.slice(0, 25);
+    for (const p of shown) {
+      console.log(`  ${p.id}: ${Array.isArray(p.tags) && p.tags.length ? tagNames(p.tags) : "(no tags)"}`);
+    }
+    if (posts.length > shown.length) {
+      console.log(`  ... and ${posts.length - shown.length} more (--json lists every post)`);
+    }
+    const notFound = Array.isArray(data.not_found) ? data.not_found : [];
+    if (notFound.length) {
+      console.log(`Not found (not posts of this workspace, left alone): ${notFound.join(", ")}`);
+    }
   });
 }
 
@@ -3053,10 +3257,13 @@ async function cmdAnalyticsPosts(config, flags, positional) {
 }
 
 async function cmdAnalyticsOverview(config, flags) {
+  const tag = flags.tag !== undefined ? parseTagFilter("--tag", flags.tag) : undefined;
   const result = await apiRequest(config, "GET", "/analytics/overview", undefined, {
     period: flags.period,
     start_date: flags["start-date"],
     end_date: flags["end-date"],
+    // --tag: only the posts with any of these tags.
+    tag,
   });
 
   handleResult(result, flags, (data) => {
@@ -3066,6 +3273,7 @@ async function cmdAnalyticsOverview(config, flags) {
     console.log("Analytics Overview");
     console.log("─".repeat(40));
     console.log(`Period: ${result.period || data.period || "custom"}`);
+    if (tag) console.log(`Tag: ${tag.split(",").join(", ")} (posts with any of these tags)`);
     console.log(`Total posts: ${data.total_posts ?? "N/A"}`);
     console.log(`Total impressions: ${data.total_impressions ?? "N/A"}`);
     console.log(`Total engagements: ${data.total_engagement ?? "N/A"}`);
@@ -3074,6 +3282,71 @@ async function cmdAnalyticsOverview(config, flags) {
     }
     if (data.top_performing_platform) {
       console.log(`Top platform: ${data.top_performing_platform}`);
+    }
+  });
+}
+
+// analytics:tags: how each tag did against the person's normal, for the
+// published posts in a period (default the last 90 days). vs_normal compares
+// each post with the median impressions of its OWN channel, so a tag does not
+// win only because its posts went to the channel with the most views; a tag
+// with fewer than min_posts measured posts says "too few posts" (its
+// vs_normal is a hint only, kept in --json). Rows come comparable first,
+// best first. Posts made outside OmniSocials are not counted.
+async function cmdAnalyticsTags(config, flags) {
+  const query = {};
+  if (flags["start-date"] !== undefined) query.start_date = requireValue("--start-date", flags["start-date"]);
+  if (flags["end-date"] !== undefined) query.end_date = requireValue("--end-date", flags["end-date"]);
+  if (flags.platform !== undefined) query.platform = requireValue("--platform", flags.platform);
+  if (flags["min-posts"] !== undefined) {
+    const n = Number(flags["min-posts"]);
+    if (!Number.isInteger(n) || n < 1 || n > 50) {
+      exitWithError(`--min-posts must be a whole number from 1 to 50${flags["min-posts"] === true ? "" : ` (got "${flags["min-posts"]}")`}`);
+    }
+    query.min_posts = n;
+  }
+
+  const result = await apiRequest(config, "GET", "/analytics/tags", undefined, query);
+  handleResult(result, flags, (data) => {
+    const rows = Array.isArray(data.tags) ? data.tags : [];
+    const period = data.period || {};
+    const minPosts = data.min_posts ?? 5;
+    const span = period.start_date ? `${period.start_date} to ${period.end_date}` : "the last 90 days";
+    console.log(`Tags compared: ${span}, ${data.platform || "all channels"}`);
+    console.log("─".repeat(40));
+    if (!rows.length) {
+      console.log(
+        'No tags in this workspace yet. Tag posts with tags:apply --posts <id,id> --add "<name>" (older posts too), then run analytics:tags again.'
+      );
+      return;
+    }
+
+    const num = (v) => (v === null || v === undefined ? "-" : String(Math.round(Number(v))));
+    const rate = (v) => (v === null || v === undefined ? "-" : `${Number(v).toFixed(1)}%`);
+    const cells = (name, r) => [
+      truncate(name, 32),
+      String(r.posts ?? 0),
+      String(r.measured ?? 0),
+      num(r.median_impressions),
+      rate(r.engagement_rate),
+      r.enough_posts === false ? "too few posts" : formatVsNormal(r.vs_normal),
+      r.best_channel || "-",
+    ];
+    const table = rows.map((r) => cells((r.tag && r.tag.name) || "(tag)", r));
+    if (data.untagged && typeof data.untagged === "object") table.push(cells("(no tag)", data.untagged));
+    printTable(
+      ["Tag", "Posts", "Measured", "Median impr.", "Eng. rate", "vs normal", "Best on"],
+      table,
+      new Set([1, 2, 3, 4])
+    );
+
+    console.log("");
+    console.log(
+      `vs normal: each post against the median impressions of its own channel, the median over the tag's posts (+38% = 38% above your normal). "too few posts" = under ${minPosts} measured posts (--min-posts changes it).`
+    );
+    const normals = Object.entries(data.normals || {}).filter(([, v]) => v !== null && v !== undefined);
+    if (normals.length) {
+      console.log(`Your normal (median impressions per post): ${normals.map(([ch, v]) => `${ch} ${num(v)}`).join(" · ")}`);
     }
   });
 }
@@ -3549,12 +3822,12 @@ SETUP
   config:show                    Show current configuration
 
 POSTS
-  posts:list                     List posts [--status --limit --offset]
+  posts:list                     List posts [--status --limit --offset --tag "<name or id,...>" (posts with any of these tags)]
   posts:get <id>                 Get post details
   posts:recent-platform          Fetch recent posts live from connected platforms [--limit --platforms] (analytics:read)
-  posts:create                   Create a post [--text --channels --schedule --draft --type --media-urls --media-ids --media-fit]
+  posts:create                   Create a post [--text --channels --schedule --draft --tags --type --media-urls --media-ids --media-fit]
   posts:create-and-publish       Create and publish immediately
-  posts:update <id>              Update a draft/scheduled post [--no-draft schedules a planned draft, --draft unschedules]
+  posts:update <id>              Update a draft/scheduled post [--no-draft schedules a planned draft, --draft unschedules]; --tags alone also works on a published post
   posts:publish <id>             Publish a post now (refuses failed posts; use posts:retry)
   posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
   posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step)
@@ -3583,6 +3856,13 @@ HASHTAG SETS
   hashtag-sets:update <id>       Rename / replace tags [--name --tags] (--tags replaces the FULL list)
   hashtag-sets:delete <id>       Delete a set (existing posts keep their tags)
 
+TAGS (labels on posts inside OmniSocials, never sent to a platform; one name per tag, no groups)
+  tags:list                      List the workspace's tags (id, name, color); reuse these names before making new ones
+  tags:create                    Create a tag [--name "Question hook" (required) --color ${TAG_COLORS.join("|")}]
+  tags:update <id>               Rename or recolor a tag [--name --color]; every post with it follows
+  tags:delete <id>               Delete a tag; it comes off every post (the posts stay)
+  tags:apply                     Tag up to 500 posts at once, published ones too [--posts <id,id> (required) --add "A,B" --remove "C" --set "D" (replaces the post's tags; --set null removes all)]; a new name in --add or --set becomes a tag
+
 AUTOMATIONS (comment to DM on Instagram or a Facebook Page, DM keywords on X: needs the opt-in automations:read / automations:write scopes)
   automations:list               List automations: trigger, post, stats [--status active|paused|completed --platform instagram|facebook|x --post-id <id>]
   automations:get <id>           Full detail: trigger, post, DM, public reply, limits, stats
@@ -3608,9 +3888,10 @@ ACCOUNTS
 ANALYTICS
   analytics:post <id>            Get post analytics
   analytics:posts <id,id,...>    Get analytics for up to 100 posts in one call (bulk)
-  analytics:overview             Workspace analytics [--period --start-date --end-date]
+  analytics:overview             Workspace analytics [--period --start-date --end-date --tag "<name or id,...>" (only posts with any of these tags)]
   analytics:accounts             Account analytics [--platform --date]
   analytics:best-times           Recommended posting slots [--platform (required) --timezone]
+  analytics:tags                 Compare tags: per tag the posts, median impressions, engagement rate and how it did vs your normal (each post against its own channel's median) [--start-date --end-date (default last 90 days) --platform --min-posts <1-50> (default 5)]
 
 INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:list                     List conversations [--platform --type dm|comment|mention --unread --unanswered --limit --cursor]
@@ -3649,6 +3930,7 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --hashtag-set <name>           Apply a saved hashtag set by name (see hashtag-sets:list)
   --hashtag-placement <mode>     caption_append (default) or first_comment
   --hashtag-platforms <a,b>      Only apply the set to these channels
+  --tags "<a,b>"                 Post tags (labels inside OmniSocials, max 20 per post): names or ids, comma separated; quote names with spaces ("Question hook,Tutorial"); repeat the flag for a name with a comma. A new name becomes a tag. Replaces the tags on posts:update; "null" removes them
   --approval-workflow <id>       Hold the post for review in this approval workflow (see approval-workflows:list); needs --schedule
   --dm-keywords <a,b>            Comment to DM: whoever comments one of these words on the post gets a DM, once per person (Instagram or Facebook must be in --channels; needs automations:write on the key). Pair with --dm-message
   --dm-message "<text>"          Comment to DM: the DM to send (max 1000 chars)
@@ -3760,6 +4042,10 @@ EXAMPLES
   omnisocials inbox:next --platform instagram
   omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --message-id <message-id> --next
   omnisocials posts:list --status scheduled --json
+  omnisocials tags:list
+  omnisocials posts:create --text "Why most hooks fail" --channels tiktok --media-urls "https://example.com/hook.mp4" --tags "Question hook,Talking head"
+  omnisocials tags:apply --posts 1024,1025,1026 --add "Question hook"
+  omnisocials analytics:tags --start-date 2026-08-01 --platform tiktok
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
 
 Learn more: https://docs.omnisocials.com`);
@@ -3794,6 +4080,11 @@ const COMMANDS = {
   "hashtag-sets:create": { handler: cmdHashtagSetsCreate },
   "hashtag-sets:update": { handler: cmdHashtagSetsUpdate },
   "hashtag-sets:delete": { handler: cmdHashtagSetsDelete },
+  "tags:list": { handler: cmdTagsList },
+  "tags:create": { handler: cmdTagsCreate },
+  "tags:update": { handler: cmdTagsUpdate },
+  "tags:delete": { handler: cmdTagsDelete },
+  "tags:apply": { handler: cmdTagsApply },
   "automations:list": { handler: cmdAutomationsList },
   "automations:get": { handler: cmdAutomationsGet },
   "automations:create": { handler: cmdAutomationsCreate },
@@ -3811,6 +4102,7 @@ const COMMANDS = {
   "analytics:overview": { handler: cmdAnalyticsOverview },
   "analytics:accounts": { handler: cmdAnalyticsAccounts },
   "analytics:best-times": { handler: cmdAnalyticsBestTimes },
+  "analytics:tags": { handler: cmdAnalyticsTags },
   "inbox:list": { handler: cmdInboxList },
   "inbox:next": { handler: cmdInboxNext },
   "inbox:messages": { handler: cmdInboxMessages },

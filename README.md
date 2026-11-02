@@ -43,7 +43,7 @@ Ask your AI agent things like:
 
 ## Commands
 
-56 commands covering the full v1 API:
+63 commands covering the full v1 API:
 
 | Category | Commands |
 |----------|----------|
@@ -57,7 +57,8 @@ Ask your AI agent things like:
 | **Accounts** | `accounts:list`, `accounts:get` |
 | **Locations & audio** | `locations:search`, `audio:search` |
 | **Pinterest products** | `pinterest:products`, `pinterest:validate` |
-| **Analytics** | `analytics:post`, `analytics:posts`, `analytics:overview`, `analytics:accounts`, `analytics:best-times` |
+| **Tags** | `tags:list`, `tags:create`, `tags:update`, `tags:delete`, `tags:apply` |
+| **Analytics** | `analytics:post`, `analytics:posts`, `analytics:overview`, `analytics:accounts`, `analytics:best-times`, `analytics:tags` |
 | **Inbox** | `inbox:list`, `inbox:next`, `inbox:messages`, `inbox:read`, `inbox:reply`, `inbox:hide`, `inbox:like`, `inbox:delete` |
 | **Webhooks** | `webhooks:list`, `webhooks:create`, `webhooks:get`, `webhooks:update`, `webhooks:delete`, `webhooks:rotate-secret` |
 
@@ -70,6 +71,7 @@ Ask your AI agent things like:
 - **Image fit per channel** (unreleased): a feed image outside what a channel shows uncropped is cropped or kept per channel (`--media-fit instagram=keep,pinterest=crop`); `media:check` shows how each channel would show it first
 - **Alt text**: Per-media accessibility descriptions, delivered to Mastodon, Bluesky, X, Pinterest, Instagram (images) and LinkedIn (images)
 - **Analytics**: Post-level, bulk, workspace overview, account-level metrics, and best posting times
+- **Post tags**: label posts by hook or format (`--tags`, `tags:apply` for older posts in bulk) and compare the tags against your normal, fair across channels (`analytics:tags`)
 - **Social inbox**: Read and reply to DMs, comments, and mentions
 - **Comment to DM**: answer a keyword in an Instagram or Facebook Page comment with a DM, once per person, with a public reply under the comment; on a new post (`--dm-keywords`, `--dm-message`) or an existing one (`automations:create`), with the activity per person (`automations:events`). On X (`--platform x`) an automation answers a keyword in a DM to the account
 - **Approvals**: Send a post through an approval workflow, approve or reject it, and read the review (who decided, the reason, the comments)
