@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.38.0";
+const VERSION = "1.39.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -3645,15 +3645,18 @@ async function cmdInboxNext(config, flags) {
   });
 }
 
-// Delete a comment from the platform for good. Facebook, Instagram and TikTok
-// comments only (YouTube offers no delete for other people's comments: use
-// inbox:hide). Cannot be undone. Replies under the comment go with it. Takes
+// Delete a comment from the platform for good: a comment someone left, or one
+// of the account's own replies (for example one sent under the wrong
+// comment). Facebook, Instagram and TikTok comments only (YouTube offers no
+// delete for other people's comments: use inbox:hide). Cannot be undone.
+// Replies under the comment go with it. When the account's last reply under a
+// comment goes, that comment is unanswered again (inbox:next serves it). Takes
 // the message id from inbox:messages or inbox:next, NOT the conversation id.
 async function cmdInboxDelete(config, flags, positional) {
   const id = positional[0];
   if (!id) {
     console.error(
-      "Usage: omnisocials inbox:delete <message-id>  (Facebook, Instagram, TikTok comments; id from inbox:messages or inbox:next; cannot be undone)"
+      "Usage: omnisocials inbox:delete <message-id>  (Facebook, Instagram, TikTok comments or your own replies; id from inbox:messages or inbox:next; cannot be undone)"
     );
     process.exit(1);
   }
@@ -4175,7 +4178,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:reply <conv-id>          Reply to a conversation [--text (required) --message-id <message-id> (the comment being answered; always pass it on comment threads) --attachment-url --attachment-type --next] (inbox:write)
   inbox:hide <message-id>        Hide a comment on your post (Facebook, Instagram, TikTok, YouTube, Threads); --unhide reverses it (inbox:write)
   inbox:like <message-id>        Like a comment on your post as the Page/account (Facebook, LinkedIn Page, TikTok; Facebook: Like only); --unlike removes it (inbox:write)
-  inbox:delete <message-id>      Delete a comment from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
+  inbox:delete <message-id>      Delete a comment or one of your own replies from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
 
 WEBHOOKS
   webhooks:list                  List webhooks

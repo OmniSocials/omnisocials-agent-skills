@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.39.0 (2026-11-05)
+
+### Changed
+- **`inbox:delete` also deletes your own replies.** A reply the account posted under a comment (from OmniSocials or from the app), for example one sent under the wrong comment, can now be deleted; the API answered `unsupported_platform` for it before. Facebook, Instagram and TikTok, as before. When the account's last reply under a comment is deleted, that comment counts as unanswered again and `inbox:next` serves it. Help text and SKILL.md say so.
+
 ## 1.38.0 (2026-11-05)
 
 ### Added
