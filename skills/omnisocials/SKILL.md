@@ -1,6 +1,6 @@
 ---
 name: omnisocials
-description: Manage social media across 13 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram channels and groups, Discord channels). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram and Facebook (and DM keyword automations on X), tag posts by hook or format and compare the tags in analytics, and configure webhooks via the OmniSocials API.
+description: Manage social media across 13 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram channels and groups, Discord channels). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram and Facebook (and DM keyword automations on X), tag posts by hook or format and compare the tags in analytics, look up what OmniSocials cannot do (and why) and send feature requests, and configure webhooks via the OmniSocials API.
 ---
 
 # OmniSocials Skill
@@ -58,6 +58,18 @@ IMPORTANT: Follow these rules at all times.
 7. **For bulk operations**, process one at a time and confirm between actions.
 8. **Read the approval review before you report on or change a post in review.** When a post shows `approval_status: "rejected"` or `"pending"` (post `status` `rejected` or `in_approval`), run `posts:approval <id>` first. It says who decided, the reason and what the reviewers wrote. Do not guess why a post was rejected or who it waits for, and do not edit, reschedule or recreate the post before you have read the review and told the user what it says.
 9. **A comment-to-DM automation sends DMs in the account's name.** Before you create one (`automations:create`, or `--dm-keywords` / `--dm-message` on a post), show the user the exact DM text and the keyword and get their confirmation; the DM goes to every person who comments the keyword, once each, and a sent DM cannot be taken back. NEVER use `--match any` (or `--dm-match any`), which answers every comment, unless the user asked for every comment. On X (`--platform x`) the automation answers the DMs people send the account (every first DM with `--match any`), OmniSocials adds "Reply STOP to stop automatic messages." under each answer, and a person who replies STOP gets no automatic DM from that account again. The Automations scopes are opt-in on the API key: a `403 insufficient_scope` means the user has to enable Automations on the key (Settings > API), not that the request was wrong.
+10. **Check `limits` before you say something is not possible, and send a feature request only after the user agreed.** See "When OmniSocials cannot do something" below. A request goes to the OmniSocials team with the user's name and email. Never put the conversation, other people's personal data or secrets in its summary.
+
+## When OmniSocials cannot do something
+
+When the user asks for something no command does, do not guess why.
+
+1. Run `limits` first, with the platform when the request is about one: `limits --platform tiktok` (add `--area inbox` to narrow it). Each entry has a title, an `ID`, what it says and `Instead: ...`.
+2. Tell the user plainly what is not possible, why, and what to do instead. Use the entry's own words. If no entry matches, say that no command does it.
+3. If the user still wants it, offer to send a feature request. Name the entry: "Shall I ask the OmniSocials team for long YouTube videos?"
+4. Send it only after the user says yes: `feature:request --summary "<what the user wants to do and why>" --limit-id <ID>` (add `--platform` when it is about one platform). Write the summary yourself, in one or two sentences. Never paste the conversation, and never put other people's names, emails or messages in it.
+5. A platform rule ("The platform does not allow it") or a choice OmniSocials made on purpose cannot change through a request. Do not offer a request for those. If you send one anyway, the API answers `409 not_requestable` and stores nothing: tell the user the reason and what to do instead.
+6. Relay the outcome: a new request, a vote added to an open request of the user's organisation, or a request the user already sent. The user sees it in OmniSocials (Settings, Request a feature) and gets an email when its status changes. `feature:list` and `feature:get <id>` show the status and the team's answer.
 
 ## Common Actions
 
@@ -109,6 +121,9 @@ IMPORTANT: Follow these rules at all times.
 | "I want to review posts before they go out" / "Send it to me for approval" | `approval-workflows:list` to find the workflow id, then `posts:create ... --schedule <ISO8601> --approval-workflow <id>`. The post lands as `in_approval`, the approvers are notified, and it publishes at the scheduled time once the last step approves (Approvals page in the dashboard, or `posts:approve`). If no workflow exists, tell the user to create one in the dashboard under Approvals |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
 | "Tell my system when a post is approved or rejected" | `webhooks:create --url "https://..." --events post.approved,post.rejected` |
+| "Can OmniSocials do X?" / the user asks for something no command does | `limits --platform <id>` (or `--area`), then tell the user what is not possible, why, and what to do instead. See "When OmniSocials cannot do something" |
+| "Ask OmniSocials to build this" / "I want this feature" | After the user agreed: `feature:request --summary "<what and why>" --limit-id <ID from limits>` (`--platform` when it is about one). A platform rule is refused (`409 not_requestable`) and nothing is sent |
+| "What happened to my feature request?" | `feature:list` (status and the team's answer per request), then `feature:get <id>` for the summary and every team reply |
 
 ## Workflow
 
@@ -285,6 +300,17 @@ Read and reply to DMs, comments, and mentions across connected accounts. Every c
 | `webhooks:update <id>` | Update webhook. Flags: `--url`, `--events`, `--active true\|false` |
 | `webhooks:delete <id>` | Delete a webhook |
 | `webhooks:rotate-secret <id>` | Rotate webhook signing secret (save the new secret immediately) |
+
+### Limits and feature requests
+
+What OmniSocials cannot do, and asking the OmniSocials team for it. No scope needed. See "When OmniSocials cannot do something" for when to use them.
+
+| Command | Description |
+|---|---|
+| `limits` | What OmniSocials cannot do, why, and what to do instead, grouped by kind, platform rules first: "The platform does not allow it", "OmniSocials does not do this on purpose", "OmniSocials has not built this yet", "In beta for some accounts", "Only in the OmniSocials app", "Possible after a setup step". Each entry prints its title, platforms, `ID`, what it says and `Instead: ...`. The output ends with the kinds a request can change. Flags: `--platform` (a channel id, or `reddit` / `snapchat`), `--area posts\|media\|inbox\|analytics\|automations\|accounts\|ads\|team\|other` |
+| `feature:request` | Send a feature request for the user, only after the user agreed. Flags: `--summary` (required, 10 to 1000 characters: what the user wants to do and why, written by you, no conversation and no personal data of others), `--title` (up to 120 characters; made from the summary when left out), `--platform`, `--area`, `--limit-id <ID from limits>`. Prints the outcome: a new request, the user's vote added to the organisation's open request, or a request the user already sent. A platform rule or a choice OmniSocials made on purpose answers `409 not_requestable`: nothing is sent. At most 10 requests an hour |
+| `feature:list` | The user's own feature requests, newest first (up to 50): id, title, status (Open, In progress, Done, Declined), the date sent and the team's answer (the newest team reply when there is no answer) |
+| `feature:get <id>` | One feature request: status, votes, where it was sent from, the summary, the team's answer and every team reply, oldest first |
 
 ### Global Flags
 
@@ -803,6 +829,20 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 ./scripts/omnisocials.js webhooks:create --url "https://yoursite.com/webhook" --events post.published,post.failed
 ```
 
+### When something is not possible
+```
+./scripts/omnisocials.js limits --platform youtube
+# OmniSocials has not built this yet (can be requested)
+#   Long YouTube videos, community posts and playlists [YouTube]
+#     ID: youtube.long_videos
+#     OmniSocials publishes YouTube Shorts only, up to 3 minutes. ...
+#     Instead: Upload long videos in YouTube Studio.
+# Tell the user this. Only when the user still wants it and says yes:
+./scripts/omnisocials.js feature:request --summary "Publish long YouTube videos, not only Shorts, so the whole channel runs from OmniSocials." --platform youtube --limit-id youtube.long_videos
+# Feature request sent to the OmniSocials team: #41 "Long YouTube videos".
+./scripts/omnisocials.js feature:list
+```
+
 ### Setup (interactive)
 ```
 ./scripts/omnisocials.js setup
@@ -837,6 +877,10 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 | `x_not_connected` | `automations:create --platform x` on a workspace without an X account | Ask the user to connect X in the dashboard |
 | `tag_not_found` | `--tag` names a tag that does not exist (a filter never makes one), or an id is not a tag of this workspace | Run `tags:list` and use a name or id from it |
 | `instagram_not_connected` / `instagram_needs_reauth` | No Instagram account in the workspace, or its connection expired | Ask the user to connect or reconnect Instagram in the dashboard |
+| `not_requestable` | `feature:request --limit-id` names a platform rule or a choice OmniSocials made on purpose. Nothing was sent | Tell the user why it is not possible and what to do instead (the CLI prints both). Do not send it again |
+| `unknown_limit` | `--limit-id` is not an entry of `limits` | Run `limits` for the ids, or leave out `--limit-id` |
+| `invalid_summary` / `invalid_title` | The summary is not 10 to 1000 characters, or the title is over 120 | Write a summary of one or two sentences |
+| `too_many_requests` | More than 10 feature requests in an hour | Wait. Do not send it again right away |
 
 ### Rate Limits
 
@@ -854,6 +898,7 @@ The API allows 100 requests per minute per API key. Response headers include:
 - **Pinterest product tags**: Run `pinterest:products` to get product Pin IDs for `--pinterest-product-tags` (max 24, own product Pins only)
 - **Comment to DM**: an automation made with a post (`--dm-keywords` + `--dm-message`) starts once the post is live on its channel (Instagram, or Facebook with `--dm-platforms`); `automations:events <id>` shows every comment it answered or skipped. X automations (`automations:create --platform x`) answer DMs only, never a post
 - **Tags**: reuse the names from `tags:list`; tag older posts with `tags:apply` before you compare them with `analytics:tags`
+- **Not possible?** Run `limits --platform <id>` before you tell the user something cannot be done; offer `feature:request` only when the user still wants it, and send it after they agree
 - **Scheduling**: Use ISO 8601 format for dates (e.g., `2026-04-10T14:00:00Z`)
 - **Media upload**: Supports JPEG, PNG, GIF, WebP images, MP4, MOV, AVI videos and PDFs (100 MB per upload; up to 1 GB from a public URL with `media:upload`)
 - **Draft first**: When unsure, create as draft (no `--schedule`), review, then publish with `posts:publish`. To propose a time without publishing, use `--schedule` with `--draft` (a planned draft) and let the user confirm with `posts:update <id> --no-draft`

@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.37.0");
+    expect(stdout).toContain("OmniSocials CLI v1.38.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -4022,6 +4022,295 @@ describe("Post tags (mock API)", () => {
         const { exitCode } = await run(["hashtag-sets:create", "--name", "Gym", "--tags", "#gym #fit", "--tags", "#lift", ...auth(baseUrl)]);
         expect(exitCode).toBe(0);
         expect(calls[0].body).toEqual({ name: "Gym", hashtags: "#gym #fit #lift" });
+      }
+    );
+  });
+});
+
+describe("Limits and feature requests (mock API)", () => {
+  const auth = (baseUrl) => ["--api-key", MOCK_KEY, "--base-url", baseUrl];
+  const KINDS = {
+    platform: "The platform does not allow it",
+    by_design: "OmniSocials does not do this on purpose",
+    not_built: "OmniSocials has not built this yet",
+    beta: "In beta for some accounts",
+    dashboard_only: "Only in the OmniSocials app",
+    needs_setup: "Possible after a setup step",
+  };
+  const longVideos = {
+    id: "youtube.long_videos",
+    kind: "not_built",
+    kind_label: KINDS.not_built,
+    area: "posts",
+    platforms: ["youtube"],
+    title: "Long YouTube videos, community posts and playlists",
+    says: "OmniSocials publishes YouTube Shorts only, up to 3 minutes.",
+    instead: "Upload long videos in YouTube Studio.",
+    requestable: true,
+  };
+  const tiktokDelete = {
+    id: "tiktok.delete_video",
+    kind: "platform",
+    kind_label: KINDS.platform,
+    area: "posts",
+    platforms: ["tiktok"],
+    title: "Delete a TikTok video",
+    says: "TikTok's API has no call to delete a video.",
+    instead: "Delete it in the TikTok app.",
+    requestable: false,
+  };
+  const request = {
+    id: 41,
+    title: "Long YouTube videos",
+    summary: "Publish long YouTube videos, not only Shorts.",
+    status: "open",
+    team_answer: null,
+    team_replies: [],
+    votes_count: 1,
+    limit_id: "youtube.long_videos",
+    platform: "youtube",
+    area: "posts",
+    source: "cli",
+    created_at: "2026-11-05T09:00:00.000Z",
+    updated_at: "2026-11-05T09:00:00.000Z",
+    completed_at: null,
+  };
+  const answered = {
+    ...request,
+    id: 38,
+    title: "Bluesky inbox",
+    status: "in_progress",
+    source: "mcp",
+    created_at: "2026-11-02T08:00:00.000Z",
+    team_replies: [
+      { message: "We started on it this week.", created_at: "2026-11-04T12:00:00.000Z" },
+      { message: "On the list for December.", created_at: "2026-11-03T10:00:00.000Z" },
+    ],
+  };
+
+  it("--help lists limits and the feature commands", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("LIMITS & FEATURE REQUESTS");
+    for (const cmd of ["limits ", "feature:request ", "feature:list ", "feature:get <id>"]) {
+      expect(stdout).toContain(cmd);
+    }
+    expect(stdout).toContain("--limit-id <ID from limits>");
+  });
+
+  it("limits sends the filters and prints the entries by kind, platform rules first", async () => {
+    await withMockServer(
+      () => ({ json: { data: [longVideos, tiktokDelete], kinds: KINDS } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["limits", "--platform", "tiktok", "--area", "posts", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/limits");
+        expect(calls[0].query.get("platform")).toBe("tiktok");
+        expect(calls[0].query.get("area")).toBe("posts");
+        expect(stdout).toContain("What OmniSocials cannot do (TikTok, posts)");
+        expect(stdout.indexOf("The platform does not allow it (cannot be requested)")).toBeLessThan(
+          stdout.indexOf("OmniSocials has not built this yet (can be requested)")
+        );
+        expect(stdout).toContain("  Delete a TikTok video [TikTok]");
+        expect(stdout).toContain("    ID: tiktok.delete_video");
+        expect(stdout).toContain("    Instead: Delete it in the TikTok app.");
+        expect(stdout).toContain("    ID: youtube.long_videos");
+        expect(stdout).toMatch(/Can be requested with feature:request --limit-id <ID>: "OmniSocials has not built this yet", "In beta/);
+        expect(stdout).toMatch(/Cannot be requested .*"The platform does not allow it", "OmniSocials does not do this on purpose"/);
+      }
+    );
+  });
+
+  it("limits refuses an unknown platform or area before calling the API, and accepts reddit", async () => {
+    await withMockServer(
+      () => ({ json: { data: [], kinds: KINDS } }),
+      async (baseUrl, calls) => {
+        const bad = await run(["limits", "--platform", "myspace", ...auth(baseUrl)]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain('--platform must be one of');
+        const badArea = await run(["limits", "--area", "billing", ...auth(baseUrl)]);
+        expect(badArea.exitCode).not.toBe(0);
+        expect(calls).toHaveLength(0);
+
+        const { stdout, exitCode } = await run(["limits", "--platform", "reddit", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("No known limit for Reddit.");
+      }
+    );
+  });
+
+  it("limits passes an API 400 through", async () => {
+    await withMockServer(
+      () => ({ status: 400, json: { error: { code: "invalid_area", message: "area must be one of: posts, media." } } }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run(["limits", "--area", "posts", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [invalid_area]: area must be one of");
+      }
+    );
+  });
+
+  it("feature:request always sends source cli and prints each outcome in words", async () => {
+    const outcomes = [
+      { status: 201, json: { outcome: "created", data: request } },
+      { status: 201, json: { outcome: "voted", data: { ...answered, votes_count: 4 } } },
+      { status: 200, json: { outcome: "already_requested", data: request } },
+    ];
+    await withMockServer(
+      () => outcomes.shift(),
+      async (baseUrl, calls) => {
+        const args = ["feature:request", "--summary", "Publish long YouTube videos, not only Shorts.", ...auth(baseUrl)];
+        const created = await run([...args, "--title", "Long YouTube videos", "--platform", "youtube", "--area", "posts", "--limit-id", "youtube.long_videos"]);
+        expect(created.exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/feature-requests");
+        expect(calls[0].body).toEqual({
+          summary: "Publish long YouTube videos, not only Shorts.",
+          source: "cli",
+          title: "Long YouTube videos",
+          platform: "youtube",
+          area: "posts",
+          limit_id: "youtube.long_videos",
+        });
+        expect(created.stdout).toContain('Feature request sent to the OmniSocials team: #41 "Long YouTube videos".');
+        expect(created.stdout).toContain("feature:get 41");
+
+        const voted = await run(args);
+        expect(calls[1].body).toEqual({ summary: "Publish long YouTube videos, not only Shorts.", source: "cli" });
+        expect(voted.stdout).toContain('Your organisation already has an open request for this: #38 "Bluesky inbox".');
+        expect(voted.stdout).toContain("Your vote and your text were added to it (4 votes now).");
+
+        const again = await run(args);
+        expect(again.exitCode).toBe(0);
+        expect(again.stdout).toContain('You already asked for this: #41 "Long YouTube videos", status Open.');
+        expect(again.stdout).toContain("Nothing new was sent.");
+      }
+    );
+  });
+
+  it("feature:request checks --summary, --title, --platform and --area before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { outcome: "created", data: request } }),
+      async (baseUrl, calls) => {
+        const none = await run(["feature:request", "--title", "Long videos", ...auth(baseUrl)]);
+        expect(none.stderr).toContain("Usage: omnisocials feature:request --summary");
+        const short = await run(["feature:request", "--summary", "short", ...auth(baseUrl)]);
+        expect(short.stderr).toContain("--summary must be 10 to 1000 characters (got 5)");
+        const long = await run(["feature:request", "--summary", "x".repeat(1001), ...auth(baseUrl)]);
+        expect(long.stderr).toContain("(got 1001)");
+        const title = await run(["feature:request", "--summary", "Long enough summary.", "--title", "t".repeat(121), ...auth(baseUrl)]);
+        expect(title.stderr).toContain("--title can be up to 120 characters (got 121)");
+        const area = await run(["feature:request", "--summary", "Long enough summary.", "--area", "billing", ...auth(baseUrl)]);
+        expect(area.stderr).toContain("--area must be one of");
+        for (const r of [none, short, long, title, area]) expect(r.exitCode).not.toBe(0);
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("feature:request on a platform rule prints the reason and that nothing was sent (409 not_requestable)", async () => {
+    const error = {
+      code: "not_requestable",
+      message: "TikTok's API has no call to delete a video. A request cannot change this, so nothing was sent. Instead: Delete it in the TikTok app.",
+      limit: tiktokDelete,
+    };
+    await withMockServer(
+      () => ({ status: 409, json: { error } }),
+      async (baseUrl) => {
+        const args = ["feature:request", "--summary", "Delete TikTok videos from OmniSocials.", "--limit-id", "tiktok.delete_video", ...auth(baseUrl)];
+        const { stdout, stderr, exitCode } = await run(args);
+        expect(exitCode).not.toBe(0);
+        expect(stdout).toBe("");
+        expect(stderr).toContain('Not sent [not_requestable]: "Delete a TikTok video" is not something a request can change (The platform does not allow it).');
+        expect(stderr).toContain("Why: TikTok's API has no call to delete a video.");
+        expect(stderr).toContain("Instead: Delete it in the TikTok app.");
+        expect(stderr).toContain("Nothing was sent.");
+
+        const json = await run([...args, "--json"]);
+        expect(json.exitCode).not.toBe(0);
+        expect(JSON.parse(json.stdout).error.limit.id).toBe("tiktok.delete_video");
+      }
+    );
+  });
+
+  it("feature:request names what to do on 400 unknown_limit and 429 too_many_requests", async () => {
+    const answers = [
+      { status: 400, json: { error: { code: "unknown_limit", message: "limit_id is not an entry of GET /limits." } } },
+      { status: 429, json: { error: { code: "too_many_requests", message: "At most 10 feature requests an hour per person. Try again later." } } },
+    ];
+    await withMockServer(
+      () => answers.shift(),
+      async (baseUrl) => {
+        const unknown = await run(["feature:request", "--summary", "Something with a bad limit id.", "--limit-id", "nope", ...auth(baseUrl)]);
+        expect(unknown.exitCode).not.toBe(0);
+        expect(unknown.stderr).toContain("Error [unknown_limit]");
+        expect(unknown.stderr).toContain("Run limits (with --platform) for the ids, or leave out --limit-id.");
+
+        const limited = await run(["feature:request", "--summary", "One request too many this hour.", ...auth(baseUrl)]);
+        expect(limited.exitCode).not.toBe(0);
+        expect(limited.stderr).toContain("Error [too_many_requests]");
+        expect(limited.stderr).toContain("Nothing was sent.");
+      }
+    );
+  });
+
+  it("feature:list prints a table with the team answer, else the newest team reply", async () => {
+    await withMockServer(
+      () => ({ json: { data: [request, answered, { ...request, id: 12, title: "Dark mode", status: "completed", team_answer: "Shipped on 16 Oct." }] } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["feature:list", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/feature-requests");
+        expect(stdout).toContain("Feature requests (3, newest first)");
+        expect(stdout).toMatch(/ID\s+Title\s+Status\s+Sent\s+Team answer/);
+        expect(stdout).toMatch(/41\s+Long YouTube videos\s+Open\s+2026-11-05\s+-/);
+        expect(stdout).toMatch(/38\s+Bluesky inbox\s+In progress\s+2026-11-02\s+We started on it this week\./);
+        expect(stdout).toMatch(/12\s+Dark mode\s+Done\s+2026-11-05\s+Shipped on 16 Oct\./);
+      }
+    );
+  });
+
+  it("feature:list says when there are none", async () => {
+    await withMockServer(
+      () => ({ json: { data: [] } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["feature:list", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("You have sent no feature requests yet.");
+      }
+    );
+  });
+
+  it("feature:get prints one request with its replies, oldest first, and checks the id", async () => {
+    await withMockServer(
+      (req) =>
+        req.url.endsWith("/38")
+          ? { json: { data: answered } }
+          : { status: 404, json: { error: { code: "not_found", message: "Feature request not found." } } },
+      async (baseUrl, calls) => {
+        const bad = await run(["feature:get", "abc", ...auth(baseUrl)]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain('feature:get needs a request id: a whole number from feature:list (got "abc")');
+        const none = await run(["feature:get", ...auth(baseUrl)]);
+        expect(none.stderr).toContain("Usage: omnisocials feature:get <id>");
+        expect(calls).toHaveLength(0);
+
+        const { stdout, exitCode } = await run(["feature:get", "38", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/feature-requests/38");
+        expect(stdout).toContain("Feature request #38");
+        expect(stdout).toContain("Status: In progress");
+        expect(stdout).toContain("from an AI assistant (MCP)");
+        expect(stdout).toContain("Team answer: none yet");
+        expect(stdout).toContain("Team replies (2, oldest first)");
+        expect(stdout.indexOf("On the list for December.")).toBeLessThan(stdout.indexOf("We started on it this week."));
+
+        const missing = await run(["feature:get", "999", ...auth(baseUrl)]);
+        expect(missing.exitCode).not.toBe(0);
+        expect(missing.stderr).toContain("Error [not_found]");
+        expect(missing.stderr).toContain("List your requests with feature:list.");
       }
     );
   });

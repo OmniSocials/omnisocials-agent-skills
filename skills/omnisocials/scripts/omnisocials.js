@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.37.0";
+const VERSION = "1.38.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -3804,6 +3804,280 @@ async function cmdWebhooksRotateSecret(config, flags, positional) {
   });
 }
 
+// --- What OmniSocials cannot do, and feature requests ---
+// GET /limits lists what OmniSocials cannot do, why, and what to do instead
+// (the same list as the MCP tool get_limits). POST /feature-requests sends a
+// request to the OmniSocials team for the person behind the key; the person
+// sees it in the app (Settings, Request a feature) and gets an email when its
+// status changes. No scope needed. A platform rule or a choice OmniSocials
+// made on purpose cannot change through a request: the API answers 409
+// not_requestable and stores nothing.
+
+// The platforms of the limits list: the channel ids plus the platforms that
+// are coming soon.
+const LIMIT_PLATFORMS = [...PLATFORMS, "reddit", "snapchat"];
+const LIMIT_AREAS = ["posts", "media", "inbox", "analytics", "automations", "accounts", "ads", "team", "other"];
+// Platform rules first, then the choices OmniSocials made, then what can change.
+const LIMIT_KIND_ORDER = ["platform", "by_design", "not_built", "beta", "dashboard_only", "needs_setup"];
+// The kinds a request cannot change (each entry also says it in `requestable`).
+const NOT_REQUESTABLE_KINDS = new Set(["platform", "by_design"]);
+const LIMIT_PLATFORM_LABELS = {
+  instagram: "Instagram",
+  facebook: "Facebook",
+  linkedin: "LinkedIn Profile",
+  linkedin_page: "LinkedIn Page",
+  youtube: "YouTube",
+  tiktok: "TikTok",
+  x: "X",
+  pinterest: "Pinterest",
+  bluesky: "Bluesky",
+  threads: "Threads",
+  mastodon: "Mastodon",
+  google_business: "Google Business",
+  telegram: "Telegram",
+  discord: "Discord",
+  reddit: "Reddit",
+  snapchat: "Snapchat",
+};
+const FEATURE_STATUS_LABELS = { open: "Open", in_progress: "In progress", completed: "Done", declined: "Declined" };
+const FEATURE_SOURCE_LABELS = { app: "the OmniSocials app", mcp: "an AI assistant (MCP)", api: "the API", cli: "the CLI" };
+const FEATURE_SUMMARY_MIN = 10;
+const FEATURE_SUMMARY_MAX = 1000;
+const FEATURE_TITLE_MAX = 120;
+const FEATURE_REQUEST_USAGE =
+  'Usage: omnisocials feature:request --summary "What you want to do and why" [--title "<short name>"] [--platform <id>] [--area <area>] [--limit-id <id from limits>]';
+
+const platformLabel = (p) => LIMIT_PLATFORM_LABELS[p] || p;
+const featureStatus = (s) => FEATURE_STATUS_LABELS[s] || s || "-";
+const featureRef = (r) => `#${r.id} "${r.title}"`;
+
+// The team's answer of a request: the answer field, else the newest reply.
+function featureTeamAnswer(r) {
+  if (r && r.team_answer) return r.team_answer;
+  const replies = Array.isArray(r && r.team_replies) ? r.team_replies : [];
+  if (!replies.length) return "";
+  const newest = replies.reduce((a, b) => (String(b.created_at || "") >= String(a.created_at || "") ? b : a));
+  return newest.message || "";
+}
+
+// limits [--platform <id>] [--area <area>]: the entries grouped by kind,
+// platform rules first, each with its id, what it says and what to do instead.
+async function cmdLimits(config, flags) {
+  const query = {};
+  if (flags.platform !== undefined) query.platform = pickOneOf("--platform", flags.platform, LIMIT_PLATFORMS);
+  if (flags.area !== undefined) query.area = pickOneOf("--area", flags.area, LIMIT_AREAS);
+
+  const result = await apiRequest(config, "GET", "/limits", undefined, query);
+  handleResult(result, flags, (data) => {
+    const entries = Array.isArray(data) ? data : [];
+    const kinds = result.kinds && typeof result.kinds === "object" ? result.kinds : {};
+    const filter = [query.platform ? platformLabel(query.platform) : null, query.area].filter(Boolean).join(", ");
+    console.log(`What OmniSocials cannot do${filter ? ` (${filter})` : ""}`);
+    console.log("─".repeat(40));
+    if (!entries.length) {
+      console.log(
+        `No known limit${filter ? ` for ${filter}` : ""}. If no command does what the user asked, say so; the user can still ask for it with feature:request --summary "<what and why>".`
+      );
+      return;
+    }
+
+    const kindLabel = (kind, sample) => kinds[kind] || (sample && sample.kind_label) || kind;
+    const order = [...LIMIT_KIND_ORDER];
+    for (const e of entries) if (!order.includes(e.kind)) order.push(e.kind);
+    const requestableByKind = {};
+    for (const kind of order) {
+      const group = entries.filter((e) => e.kind === kind);
+      if (!group.length) continue;
+      const all = group.every((e) => e.requestable === true);
+      const none = group.every((e) => e.requestable !== true);
+      requestableByKind[kind] = all ? true : none ? false : null;
+      const mark = all ? "can be requested" : none ? "cannot be requested" : "";
+      console.log("");
+      console.log(`${kindLabel(kind, group[0])}${mark ? ` (${mark})` : ""}`);
+      for (const e of group) {
+        const where = Array.isArray(e.platforms) && e.platforms.length ? ` [${e.platforms.map(platformLabel).join(", ")}]` : "";
+        const own = mark ? "" : e.requestable ? "  (can be requested)" : "  (cannot be requested)";
+        console.log(`  ${e.title}${where}${own}`);
+        console.log(`    ID: ${e.id}`);
+        if (e.says) console.log(`    ${e.says}`);
+        if (e.instead) console.log(`    Instead: ${e.instead}`);
+      }
+    }
+
+    // Which kinds a request can change: from the entries shown, else the
+    // known rule, for every kind the API names.
+    const allKinds = Object.keys(kinds).length ? Object.keys(kinds) : order;
+    const canAsk = [];
+    const cannotAsk = [];
+    for (const kind of allKinds) {
+      const shown = requestableByKind[kind];
+      if (shown === null) continue; // mixed: each entry says it
+      const can = shown === true || (shown === undefined && !NOT_REQUESTABLE_KINDS.has(kind));
+      (can ? canAsk : cannotAsk).push(`"${kindLabel(kind)}"`);
+    }
+    console.log("");
+    if (canAsk.length) {
+      console.log(`Can be requested with feature:request --limit-id <ID>: ${canAsk.join(", ")}.`);
+    }
+    if (cannotAsk.length) {
+      console.log(`Cannot be requested (a request changes nothing, the API refuses it): ${cannotAsk.join(", ")}.`);
+    }
+    console.log("Send a request only after the user said yes to it.");
+  });
+}
+
+// The 409 not_requestable answer: the entry is a platform rule or a choice
+// OmniSocials made on purpose. Nothing was stored.
+function printNotRequestable(error) {
+  const limit = error && error.limit && typeof error.limit === "object" ? error.limit : null;
+  if (!limit) {
+    console.error(`Error [${error.code}]: ${error.message}`);
+    console.error("Nothing was sent.");
+    return;
+  }
+  const kind = limit.kind_label || limit.kind;
+  console.error(`Not sent [not_requestable]: "${limit.title}" is not something a request can change${kind ? ` (${kind})` : ""}.`);
+  if (limit.says) console.error(`Why: ${limit.says}`);
+  if (limit.instead) console.error(`Instead: ${limit.instead}`);
+  console.error("Nothing was sent. Tell the user the reason and what to do instead.");
+}
+
+async function cmdFeatureRequest(config, flags) {
+  if (flags.summary === undefined) exitWithError(FEATURE_REQUEST_USAGE);
+  const summary = requireValue("--summary", flags.summary);
+  if (summary.length < FEATURE_SUMMARY_MIN || summary.length > FEATURE_SUMMARY_MAX) {
+    exitWithError(
+      `--summary must be ${FEATURE_SUMMARY_MIN} to ${FEATURE_SUMMARY_MAX} characters (got ${summary.length}): what the user wants to do and why, in one or two sentences`
+    );
+  }
+  // source "cli": the team sees where the request came from.
+  const body = { summary, source: "cli" };
+  if (flags.title !== undefined) {
+    const title = requireValue("--title", flags.title);
+    if (title.length > FEATURE_TITLE_MAX) {
+      exitWithError(`--title can be up to ${FEATURE_TITLE_MAX} characters (got ${title.length})`);
+    }
+    body.title = title;
+  }
+  if (flags.platform !== undefined) body.platform = pickOneOf("--platform", flags.platform, LIMIT_PLATFORMS);
+  if (flags.area !== undefined) body.area = pickOneOf("--area", flags.area, LIMIT_AREAS);
+  if (flags["limit-id"] !== undefined) body.limit_id = requireValue("--limit-id", flags["limit-id"]);
+
+  const result = await apiRequest(config, "POST", "/feature-requests", body);
+  const error = result.error;
+  if (error && !flags.json) {
+    if (error.code === "not_requestable") {
+      printNotRequestable(error);
+      process.exit(1);
+    }
+    console.error(`Error [${error.code}]: ${error.message}`);
+    if (error.code === "unknown_limit") {
+      console.error("Nothing was sent. Run limits (with --platform) for the ids, or leave out --limit-id.");
+    } else if (error.code === "too_many_requests") {
+      console.error("Nothing was sent. Do not send it again right away: the limit is 10 requests an hour.");
+    } else {
+      console.error("Nothing was sent.");
+    }
+    process.exit(1);
+  }
+
+  handleResult(result, flags, (r) => {
+    if (!r) {
+      console.log("The request was sent, but the API returned no details. List it with feature:list.");
+      return;
+    }
+    const where =
+      "You see it in OmniSocials (Settings, Request a feature) and get an email when its status changes.";
+    if (result.outcome === "voted") {
+      const votes = r.votes_count ?? 0;
+      console.log(`Your organisation already has an open request for this: ${featureRef(r)}.`);
+      console.log(`Your vote and your text were added to it (${votes} vote${votes === 1 ? "" : "s"} now).`);
+      console.log(where);
+    } else if (result.outcome === "already_requested") {
+      console.log(`You already asked for this: ${featureRef(r)}, status ${featureStatus(r.status)}.`);
+      console.log("Nothing new was sent.");
+    } else {
+      console.log(`Feature request sent to the OmniSocials team: ${featureRef(r)}.`);
+      console.log(`Status: ${featureStatus(r.status)}`);
+      console.log(where);
+    }
+    console.log(`Follow it with: feature:get ${r.id}`);
+  });
+}
+
+async function cmdFeatureList(config, flags) {
+  const result = await apiRequest(config, "GET", "/feature-requests");
+  handleResult(result, flags, (data) => {
+    const list = Array.isArray(data) ? data : [];
+    if (!list.length) {
+      console.log(
+        'You have sent no feature requests yet. Run limits first to see what OmniSocials cannot do, then feature:request --summary "<what and why>".'
+      );
+      return;
+    }
+    console.log(`Feature requests (${list.length}, newest first)`);
+    console.log("─".repeat(40));
+    printTable(
+      ["ID", "Title", "Status", "Sent", "Team answer"],
+      list.map((r) => [
+        String(r.id),
+        truncate(r.title, 40),
+        featureStatus(r.status),
+        String(r.created_at || "").slice(0, 10) || "-",
+        truncate(featureTeamAnswer(r), 60) || "-",
+      ]),
+      new Set([0])
+    );
+    console.log("");
+    console.log("Read one with its replies: feature:get <id>");
+  });
+}
+
+async function cmdFeatureGet(config, flags, positional) {
+  const raw = flags.id !== undefined ? flags.id : positional[0];
+  if (raw === undefined || raw === true) exitWithError("Usage: omnisocials feature:get <id>");
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) {
+    exitWithError(`feature:get needs a request id: a whole number from feature:list (got "${raw}")`);
+  }
+
+  const result = await apiRequest(config, "GET", `/feature-requests/${id}`);
+  if (result.error && result.error.code === "not_found" && !flags.json) {
+    console.error(`Error [${result.error.code}]: ${result.error.message}`);
+    console.error("List your requests with feature:list.");
+    process.exit(1);
+  }
+  handleResult(result, flags, (r) => {
+    const votes = r.votes_count ?? 0;
+    console.log(`Feature request #${r.id}`);
+    console.log("─".repeat(40));
+    console.log(`Title: ${r.title}`);
+    console.log(`Status: ${featureStatus(r.status)}`);
+    console.log(`Votes: ${votes}`);
+    console.log(
+      `Sent: ${r.created_at || "-"}${r.source ? ` from ${FEATURE_SOURCE_LABELS[r.source] || r.source}` : ""}`
+    );
+    if (r.updated_at) console.log(`Updated: ${r.updated_at}`);
+    if (r.completed_at) console.log(`Completed: ${r.completed_at}`);
+    if (r.platform) console.log(`Platform: ${platformLabel(r.platform)}`);
+    if (r.area) console.log(`Area: ${r.area}`);
+    if (r.limit_id) console.log(`Limit: ${r.limit_id}`);
+    console.log("");
+    console.log("Summary:");
+    console.log(`  ${String(r.summary || "").replace(/\n/g, "\n  ")}`);
+    console.log("");
+    console.log(`Team answer: ${r.team_answer || "none yet"}`);
+    const replies = Array.isArray(r.team_replies) ? r.team_replies : [];
+    if (!replies.length) {
+      console.log("Team replies: none yet");
+      return;
+    }
+    console.log(`Team replies (${replies.length}, oldest first)`);
+    const sorted = [...replies].sort((a, b) => String(a.created_at || "").localeCompare(String(b.created_at || "")));
+    for (const reply of sorted) console.log(`  ${reply.created_at || "-"}  ${reply.message}`);
+  });
+}
+
 // ─── Help ───────────────────────────────────────────────────────────────────
 
 function showHelp() {
@@ -3910,6 +4184,12 @@ WEBHOOKS
   webhooks:update <id>           Update webhook [--url --events --active]
   webhooks:delete <id>           Delete a webhook
   webhooks:rotate-secret <id>    Rotate webhook secret
+
+LIMITS & FEATURE REQUESTS (what OmniSocials cannot do, and asking the team for it; no scope needed)
+  limits                         What OmniSocials cannot do, why, and what to do instead, grouped by kind, platform rules first [--platform <id> (a channel id, or reddit|snapchat) --area ${LIMIT_AREAS.join("|")}]; run it before telling the user something is not possible
+  feature:request                Send a feature request to the OmniSocials team, only after the user agreed [--summary "<what and why>" (required, ${FEATURE_SUMMARY_MIN}-${FEATURE_SUMMARY_MAX} chars, no personal data of others) --title "<max ${FEATURE_TITLE_MAX} chars>" --platform <id> --area <area> --limit-id <ID from limits>]; a platform rule is refused and nothing is sent; max 10 an hour
+  feature:list                   Your feature requests, newest first: id, title, status, date sent, the team's answer
+  feature:get <id>               One feature request: summary, status, votes and the team's replies
 
 GLOBAL FLAGS
   --json                         Output raw JSON
@@ -4046,6 +4326,9 @@ EXAMPLES
   omnisocials posts:create --text "Why most hooks fail" --channels tiktok --media-urls "https://example.com/hook.mp4" --tags "Question hook,Talking head"
   omnisocials tags:apply --posts 1024,1025,1026 --add "Question hook"
   omnisocials analytics:tags --start-date 2026-08-01 --platform tiktok
+  omnisocials limits --platform youtube
+  omnisocials feature:request --summary "Publish long YouTube videos, not only Shorts, so the whole channel runs from OmniSocials." --platform youtube --limit-id youtube.long_videos
+  omnisocials feature:list
   omnisocials media:upload-base64 --file ./photo.jpg --name "summer-promo"
 
 Learn more: https://docs.omnisocials.com`);
@@ -4117,6 +4400,10 @@ const COMMANDS = {
   "webhooks:update": { handler: cmdWebhooksUpdate },
   "webhooks:delete": { handler: cmdWebhooksDelete },
   "webhooks:rotate-secret": { handler: cmdWebhooksRotateSecret },
+  limits: { handler: cmdLimits },
+  "feature:request": { handler: cmdFeatureRequest },
+  "feature:list": { handler: cmdFeatureList },
+  "feature:get": { handler: cmdFeatureGet },
 };
 
 // ─── Main ───────────────────────────────────────────────────────────────────
