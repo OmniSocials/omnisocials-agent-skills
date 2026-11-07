@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.40.0";
+const VERSION = "1.40.1";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1595,8 +1595,15 @@ function printNextItem(data, remaining) {
   const messageId = isComment ? ` --message-id ${msg.id}` : "";
   // `liked` is false only where a like is possible (Facebook, LinkedIn Page,
   // TikTok comments); null means the platform has no like through the API.
+  // TikTok deletes only the account's own comments (2026-11-07), so for
+  // someone else's TikTok comment the hint offers hide only.
+  const tiktok = (msg.platform || convo.platform) === "tiktok";
   const moderation = isComment
-    ? `; hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}${
+    ? `; ${
+        tiktok
+          ? `hide the comment with inbox:hide ${msg.id} (TikTok does not allow deleting other people's comments)`
+          : `hide or delete the comment with inbox:hide ${msg.id} / inbox:delete ${msg.id}`
+      }${
         msg.liked === false ? `; like it with inbox:like ${msg.id}` : ""
       }`
     : "";
@@ -3712,7 +3719,7 @@ async function cmdInboxDelete(config, flags, positional) {
   const id = positional[0];
   if (!id) {
     console.error(
-      "Usage: omnisocials inbox:delete <message-id>  (Facebook, Instagram, TikTok comments or your own replies; id from inbox:messages or inbox:next; cannot be undone)"
+      "Usage: omnisocials inbox:delete <message-id>  (Facebook and Instagram comments, or your own replies there and on TikTok; id from inbox:messages or inbox:next; cannot be undone)"
     );
     process.exit(1);
   }
@@ -4237,7 +4244,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:reply <conv-id>          Reply to a conversation [--text (required) --message-id <message-id> (the comment being answered; always pass it on comment threads) --attachment-url --attachment-type --next] (inbox:write)
   inbox:hide <message-id>        Hide a comment on your post (Facebook, Instagram, TikTok, YouTube, Threads); --unhide reverses it (inbox:write)
   inbox:like <message-id>        Like a comment on your post as the Page/account (Facebook, LinkedIn Page, TikTok; Facebook: Like only); --unlike removes it (inbox:write)
-  inbox:delete <message-id>      Delete a comment or one of your own replies from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
+  inbox:delete <message-id>      Delete a comment or one of your own replies from the platform (Facebook, Instagram; TikTok: own replies only); cannot be undone (inbox:write)
 
 WEBHOOKS
   webhooks:list                  List webhooks (the workspace's and the organisation-wide ones)

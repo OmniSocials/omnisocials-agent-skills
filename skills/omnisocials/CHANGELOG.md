@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.40.1 (2026-11-08)
+
+### Changed
+- **`inbox:delete` on TikTok works only on your own replies.** TikTok does not let an account delete comments other people left; every such delete failed with "Failed to delete comment on TikTok". The API now answers `400 unsupported_platform` with that reason before it calls TikTok, and a failed delete of your own TikTok reply names TikTok's reason. The help text, `SKILL.md` and the `inbox:next` hint say so: for someone else's TikTok comment the hint offers `inbox:hide` only.
+- **New answers on replies (API behaviour, no CLI change).** `inbox:reply` on YouTube answers `422 reply_not_accepted` when YouTube refuses a reply without a reason (nothing was posted; wait a few minutes, reply more slowly); on an Instagram or Facebook account whose session Meta ended it answers `401 reauth_required` (reconnect the account) instead of `502 platform_error`.
+
 ## 1.40.0 (2026-11-06)
 
 ### Added
