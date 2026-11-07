@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.39.0";
+const VERSION = "1.40.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1275,9 +1275,17 @@ function formatWebhook(webhook, index) {
   lines.push(`#${index + 1}  ID: ${webhook.id}`);
   lines.push(`    URL: ${webhook.url}`);
   lines.push(`    Events: ${webhook.events.join(", ")}`);
+  // workspace_id null = organisation-wide (made in the dashboard, every
+  // workspace); absent on an API older than 2026-11-06.
+  if (webhook.workspace_id === null) lines.push("    Scope: organisation (every workspace)");
+  else if (webhook.workspace_id !== undefined) lines.push(`    Scope: workspace ${webhook.workspace_id}`);
   lines.push(`    Active: ${webhook.is_active}`);
   if (webhook.last_triggered_at) {
     lines.push(`    Last triggered: ${webhook.last_triggered_at}`);
+  }
+  // A switch-off when the person who set it up lost access says why here.
+  if (!webhook.is_active && webhook.last_failure?.error) {
+    lines.push(`    Last failure: ${webhook.last_failure.error}`);
   }
   return lines.join("\n");
 }
@@ -1981,6 +1989,35 @@ async function cmdPostsRetry(config, flags, positional) {
   });
 }
 
+// --step-order 2: the workflow step the person reviewed, a whole number from 1.
+// Undefined when the flag is absent.
+function parseStepOrderFlag(flags) {
+  if (flags["step-order"] === undefined) return undefined;
+  const value = flags["step-order"];
+  const n = value === true ? NaN : Number(value);
+  if (!Number.isInteger(n) || n < 1) {
+    exitWithError(
+      `--step-order must be a whole number from 1: the step from "Waiting on" in posts:approval${value === true ? "" : ` (got "${value}")`}`
+    );
+  }
+  return n;
+}
+
+// handleResult plus the step hint: a 409 step_changed (the review moved on
+// since it was read, or an earlier call went through) names the step it is
+// on now and where to read it.
+function handleApprovalResult(result, flags, id, formatter) {
+  const error = result && result.error;
+  if (error && error.code === "step_changed" && !flags.json) {
+    console.error(`Error [${error.code}]: ${error.message}`);
+    console.error(
+      `Nothing was decided.${error.current_step_order != null ? ` The review is on step ${error.current_step_order} now.` : ""} Read it with: omnisocials posts:approval ${id}`
+    );
+    process.exit(1);
+  }
+  handleResult(result, flags, formatter);
+}
+
 async function cmdPostsApprove(config, flags, positional) {
   // Approves the CURRENT step of a post's approval workflow, on behalf of
   // the connected API key's owner. That user must be a listed approver for
@@ -1989,15 +2026,21 @@ async function cmdPostsApprove(config, flags, positional) {
   // on a post with approval_status "pending". If this is the last step, the
   // post finalizes immediately (scheduled or posting); otherwise it stays
   // in_approval and the next step's approvers are notified.
+  //
+  // --step-order <n> (the "Waiting on: step n" of posts:approval): a repeated
+  // call after the review moved on answers 409 step_changed instead of
+  // approving the next step too.
   const id = positional[0];
   if (!id) {
-    console.error("Usage: omnisocials posts:approve <id>");
+    console.error("Usage: omnisocials posts:approve <id> [--step-order <n>]");
     process.exit(1);
   }
 
-  const result = await apiRequest(config, "POST", `/posts/${id}/approve`);
+  const stepOrder = parseStepOrderFlag(flags);
+  const body = stepOrder !== undefined ? { step_order: stepOrder } : undefined;
+  const result = await apiRequest(config, "POST", `/posts/${id}/approve`, body);
 
-  handleResult(result, flags, (data) => {
+  handleApprovalResult(result, flags, id, (data) => {
     console.log(`Approved!`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
@@ -2011,16 +2054,26 @@ async function cmdPostsReject(config, flags, positional) {
   // immediately (not just the current step). Same approver requirement as
   // posts:approve. --comment is optional and, when given, is shown to the
   // requester and other approvers in the post's review thread.
+  // --step-order <n> as on posts:approve.
   const id = positional[0];
   if (!id) {
-    console.error('Usage: omnisocials posts:reject <id> [--comment "..."]');
+    console.error('Usage: omnisocials posts:reject <id> [--comment "..."] [--step-order <n>]');
     process.exit(1);
   }
 
-  const body = flags.comment ? { comment: flags.comment } : undefined;
-  const result = await apiRequest(config, "POST", `/posts/${id}/reject`, body);
+  const stepOrder = parseStepOrderFlag(flags);
+  const body = {
+    ...(flags.comment ? { comment: flags.comment } : {}),
+    ...(stepOrder !== undefined ? { step_order: stepOrder } : {}),
+  };
+  const result = await apiRequest(
+    config,
+    "POST",
+    `/posts/${id}/reject`,
+    Object.keys(body).length ? body : undefined
+  );
 
-  handleResult(result, flags, (data) => {
+  handleApprovalResult(result, flags, id, (data) => {
     console.log(`Rejected.`);
     console.log(`ID: ${data.id}`);
     console.log(`Status: ${data.status}`);
@@ -2070,6 +2123,9 @@ async function cmdPostsApproval(config, flags, positional) {
       const waiting = (step?.approvers || []).filter((a) => a.status === "pending").map(person);
       console.log(
         `Waiting on: step ${data.current_step}${step?.name ? ` (${step.name})` : ""}${waiting.length ? `: ${waiting.join(", ")}` : ""}`
+      );
+      console.log(
+        `To decide on this step: posts:approve ${data.post_id || id} --step-order ${data.current_step} (or posts:reject ... --step-order ${data.current_step})`
       );
     }
     if (data.rejection) {
@@ -3804,6 +3860,9 @@ async function cmdWebhooksRotateSecret(config, flags, positional) {
       console.log(`New secret: ${data.secret}`);
       console.log("(Save this secret - it won't be shown again)");
     }
+    console.log(
+      "For 24 hours each delivery also carries X-OmniSocials-Signature-Previous, signed with the old secret: accept either signature until your endpoint uses the new one."
+    );
   });
 }
 
@@ -4107,8 +4166,8 @@ POSTS
   posts:update <id>              Update a draft/scheduled post [--no-draft schedules a planned draft, --draft unschedules]; --tags alone also works on a published post
   posts:publish <id>             Publish a post now (refuses failed posts; use posts:retry)
   posts:retry <id>               Retry only the failed platforms of a failed/partially failed post (async; max 3 retries per platform)
-  posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step)
-  posts:reject <id>              Reject a post's approval workflow, stopping it immediately [--comment "..."]
+  posts:approve <id>             Approve the current step of a post's approval workflow (must be a listed approver for that step) [--step-order <n>]
+  posts:reject <id>              Reject a post's approval workflow, stopping it immediately [--comment "..."] [--step-order <n>]
   posts:approval <id>            Read a post's approval review: steps, approvers, who rejected it and why, comments
   posts:delete <id>              Remove a post from OmniSocials (the live post stays)
 
@@ -4181,7 +4240,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:delete <message-id>      Delete a comment or one of your own replies from the platform (Facebook, Instagram, TikTok); cannot be undone (inbox:write)
 
 WEBHOOKS
-  webhooks:list                  List webhooks
+  webhooks:list                  List webhooks (the workspace's and the organisation-wide ones)
   webhooks:create                Create webhook [--url --events] (events: post.scheduled, post.published, post.failed, post.approved, post.rejected)
   webhooks:get <id>              Get webhook details
   webhooks:update <id>           Update webhook [--url --events --active]

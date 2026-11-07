@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.39.0");
+    expect(stdout).toContain("OmniSocials CLI v1.40.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -4311,6 +4311,146 @@ describe("Limits and feature requests (mock API)", () => {
         expect(missing.exitCode).not.toBe(0);
         expect(missing.stderr).toContain("Error [not_found]");
         expect(missing.stderr).toContain("List your requests with feature:list.");
+      }
+    );
+  });
+});
+
+describe("Approval step and webhooks (mock API)", () => {
+  const auth = (baseUrl) => ["--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+  it("posts:approve sends no body without --step-order and step_order with it", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: { id: "1024", status: "in_approval", approval_status: "pending" } } }),
+      async (baseUrl, calls) => {
+        const plain = await run(["posts:approve", "1024", ...auth(baseUrl)]);
+        expect(plain.exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/1024/approve");
+        expect(calls[0].body).toBe(null);
+
+        const stepped = await run(["posts:approve", "1024", "--step-order", "2", ...auth(baseUrl)]);
+        expect(stepped.exitCode).toBe(0);
+        expect(calls[1].body).toEqual({ step_order: 2 });
+      }
+    );
+  });
+
+  it("posts:reject sends comment and step_order", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: { id: "1024", status: "rejected", approval_status: "rejected" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "posts:reject", "1024", "--comment", "Wrong photo", "--step-order", "1", ...auth(baseUrl),
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/posts/1024/reject");
+        expect(calls[0].body).toEqual({ comment: "Wrong photo", step_order: 1 });
+      }
+    );
+  });
+
+  it("--step-order must be a whole number from 1", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: {} } }),
+      async (baseUrl, calls) => {
+        for (const bad of ["0", "1.5", "two"]) {
+          const { stderr, exitCode } = await run(["posts:approve", "1024", "--step-order", bad, ...auth(baseUrl)]);
+          expect(exitCode).not.toBe(0);
+          expect(stderr).toContain("--step-order must be a whole number from 1");
+        }
+        expect(calls.length).toBe(0);
+      }
+    );
+  });
+
+  it("a 409 step_changed names the current step and how to read it", async () => {
+    await withMockServer(
+      () => ({
+        status: 409,
+        json: {
+          error: {
+            code: "step_changed",
+            message: "This review is on step 2 now, not step 1: somebody decided since it was opened. Open the post again before you decide.",
+            current_step_order: 2,
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run(["posts:approve", "1024", "--step-order", "1", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [step_changed]");
+        expect(stderr).toContain("Nothing was decided. The review is on step 2 now.");
+        expect(stderr).toContain("omnisocials posts:approval 1024");
+      }
+    );
+  });
+
+  it("posts:approval prints the --step-order to decide with", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: {
+            post_id: "1024",
+            status: "pending",
+            workflow: { id: "42", name: "Content approval" },
+            requested_by: { id: "u1", name: "Alex" },
+            requested_at: "2026-11-06T09:00:00.000Z",
+            current_step: 2,
+            steps: [
+              { order: 1, name: "Team", require_mode: "any", status: "approved", approvers: [] },
+              { order: 2, name: "Client", require_mode: "all", status: "pending", approvers: [{ id: "u2", name: "Sam", status: "pending" }] },
+            ],
+            rejection: null,
+            comments: [],
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["posts:approval", "1024", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Waiting on: step 2 (Client): Sam");
+        expect(stdout).toContain("posts:approve 1024 --step-order 2");
+      }
+    );
+  });
+
+  it("webhooks:list shows the scope and the reason of a switch-off", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: [
+            { id: "wh-1", workspace_id: 7, url: "https://example.com/a", events: ["post.published"], is_active: true },
+            {
+              id: "wh-2",
+              workspace_id: null,
+              url: "https://example.com/b",
+              events: ["post.failed"],
+              is_active: false,
+              last_failure: { at: "2026-11-06T10:00:00.000Z", status: null, error: "The person who set up this webhook no longer has access.", attempts: 0 },
+            },
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["webhooks:list", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Scope: workspace 7");
+        expect(stdout).toContain("Scope: organisation (every workspace)");
+        expect(stdout).toContain("Last failure: The person who set up this webhook no longer has access.");
+      }
+    );
+  });
+
+  it("webhooks:rotate-secret names the previous signature header", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: { id: "wh-1", secret: "fake-rotated-secret" } } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["webhooks:rotate-secret", "wh-1", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("New secret: fake-rotated-secret");
+        expect(stdout).toContain("X-OmniSocials-Signature-Previous");
       }
     );
   });

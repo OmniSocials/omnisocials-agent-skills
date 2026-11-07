@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.40.0 (2026-11-06)
+
+### Added
+- **`--step-order <n>` on `posts:approve` and `posts:reject`.** Sends `step_order`: the workflow step the user reviewed, the "Waiting on: step n" of `posts:approval` (which now also prints the command to decide on that step). When the review is on another step by then (somebody decided since it was read, or an earlier call went through after a timeout), nothing is decided and the API answers `409 step_changed`; the CLI prints the step the review is on now and `omnisocials posts:approval <id>` to read it again. Without the flag the commands act on the current step, as before. The CLI refuses a value that is not a whole number from 1 before it calls the API.
+
+### Changed
+- **Organisation-wide webhooks (API behaviour).** `webhooks:list`, `webhooks:get`, `webhooks:update`, `webhooks:delete` and `webhooks:rotate-secret` also reach the webhooks made in the OmniSocials dashboard, which receive the events of every workspace. `webhooks:list` prints `Scope: organisation (every workspace)` or `Scope: workspace <id>`, and for a switched-off webhook the reason under `Last failure`: a webhook switches off by itself when the person who set it up no longer has access to the organisation or workspace; `webhooks:update <id> --active true` switches it on again.
+- **Secret rotation keeps the old secret for 24 hours (API behaviour).** After `webhooks:rotate-secret`, every delivery carries `X-OmniSocials-Signature` (new secret) and `X-OmniSocials-Signature-Previous` (old secret) for 24 hours; the command says so.
+- **New answers on posts (API behaviour, no CLI change).** `409 review_required` on `posts:update --schedule` and `posts:publish` for a post whose review asked for changes; `409 post_publishing` on `posts:update` and `posts:delete` while the post publishes; `409 retry_in_progress` on `posts:retry` while another retry runs; `409 media_processing` (and `400 invalid_media` for a failed file) when a `--media-ids` file is still processing. SKILL.md says what to do for each.
+
 ## 1.39.0 (2026-11-05)
 
 ### Changed
