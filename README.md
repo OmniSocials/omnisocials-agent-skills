@@ -43,7 +43,7 @@ Ask your AI agent things like:
 
 ## Commands
 
-67 commands covering the full v1 API:
+70 commands covering the full v1 API:
 
 | Category | Commands |
 |----------|----------|
@@ -54,11 +54,12 @@ Ask your AI agent things like:
 | **Folders** | `folders:list`, `folders:create` |
 | **Hashtag sets** | `hashtag-sets:list`, `hashtag-sets:create`, `hashtag-sets:update`, `hashtag-sets:delete` |
 | **Automations (comment to DM)** | `automations:list`, `automations:get`, `automations:create`, `automations:update`, `automations:delete`, `automations:events` |
-| **Accounts** | `accounts:list`, `accounts:get` |
+| **Accounts** | `accounts:list`, `accounts:get`, `accounts:x-statistics` |
 | **Locations & audio** | `locations:search`, `audio:search` |
 | **Pinterest products** | `pinterest:products`, `pinterest:validate` |
 | **Tags** | `tags:list`, `tags:create`, `tags:update`, `tags:delete`, `tags:apply` |
-| **Analytics** | `analytics:post`, `analytics:posts`, `analytics:overview`, `analytics:accounts`, `analytics:best-times`, `analytics:tags` |
+| **Analytics** | `analytics:post`, `analytics:posts`, `analytics:refresh`, `analytics:overview`, `analytics:accounts`, `analytics:best-times`, `analytics:tags` |
+| **Credits** | `credits:get` |
 | **Inbox** | `inbox:list`, `inbox:next`, `inbox:messages`, `inbox:read`, `inbox:reply`, `inbox:hide`, `inbox:like`, `inbox:delete` |
 | **Webhooks** | `webhooks:list`, `webhooks:create`, `webhooks:get`, `webhooks:update`, `webhooks:delete`, `webhooks:rotate-secret` |
 | **Limits & feature requests** | `limits`, `feature:request`, `feature:list`, `feature:get` |
@@ -76,7 +77,8 @@ Ask your AI agent things like:
 - **Social inbox**: Read and reply to DMs, comments, and mentions
 - **Comment to DM**: answer a keyword in an Instagram or Facebook Page comment with a DM, once per person, with a public reply under the comment; on a new post (`--dm-keywords`, `--dm-message`) or an existing one (`automations:create`), with the activity per person (`automations:events`). On X (`--platform x`) an automation answers a keyword in a DM to the account
 - **Approvals**: Send a post through an approval workflow, approve or reject it, and read the review (who decided, the reason, the comments)
-- **Webhooks**: Get notified when posts are scheduled, published, fail, or are approved or rejected in an approval workflow
+- **X statistics on credits**: read the credit balance and each X account's estimate (`credits:get`), choose how often an X account's posts are checked and its followers counted (`accounts:x-statistics`), and check one X post now (`analytics:refresh`)
+- **Webhooks**: Get notified when posts are scheduled, published, fail, or are approved or rejected in an approval workflow, and when X statistics pause because credits ran out
 - **Limits and feature requests**: see what OmniSocials cannot do, why, and what to do instead (`limits`), ask the OmniSocials team for it (`feature:request`), and follow the answer (`feature:list`, `feature:get`)
 - **Zero dependencies**: Uses Node.js 18+ built-in fetch
 

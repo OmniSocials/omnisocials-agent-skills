@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.40.2";
+const VERSION = "1.41.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1225,26 +1225,82 @@ function formatPost(post, index) {
   return lines.join("\n");
 }
 
-function formatAccount(account, index) {
+// --- X statistics (on credits) ---
+// X bills every statistics read and OmniSocials passes X's price on as
+// credits: half a credit a post check (half more for a tweet with a video or
+// GIF), 1 credit a follower count, free when the post was read that UTC day.
+// An X account carries `x_statistics` { posts, followers, post_schedule,
+// source, billing, state, paused_reason } in GET /accounts and
+// GET /accounts/{id}; PATCH /accounts/{id} changes it. The words below are
+// the app's ("Check each post": 5 checks / 2 checks / Off, "Count followers":
+// Daily / Weekly / Off). `custom`, `hourly` and `6h` are values only the API
+// can set; the CLI prints them but does not offer them.
+const X_POSTS_CHOICES = ["full", "light", "off"];
+const X_FOLLOWERS_CHOICES = ["daily", "weekly", "off"];
+const X_POSTS_WORDS = { full: "5 checks", light: "2 checks", off: "Off", custom: "Custom schedule" };
+const X_FOLLOWERS_WORDS = { daily: "Daily", weekly: "Weekly", off: "Off", hourly: "Hourly", "6h": "Every 6 hours" };
+const X_STATISTICS_PRICES =
+  "Half a credit a post check (1 credit for a post with a video or GIF), 1 credit a follower count; a post read today (UTC) is free to read again.";
+const X_PAUSED_TEXT =
+  "paused: credits ran out. Posts still go out; the checks start again by themselves when credits are added (a top-up or auto-refill)";
+// The switch in the dashboard's Create API key modal that adds the opt-in
+// scopes credits:read and accounts:write.
+const CREDITS_KEY_SWITCH = "Credits and X statistics";
+
+const xPostsWord = (v) => X_POSTS_WORDS[v] || v || "-";
+const xFollowersWord = (v) => X_FOLLOWERS_WORDS[v] || v || "-";
+
+function xScheduleText(schedule) {
+  if (!schedule || !Array.isArray(schedule.at) || !schedule.at.length) return "";
+  let text = `at ${schedule.at.join(", ")} after publishing`;
+  if (schedule.then_every) text += `, then every ${schedule.then_every}`;
+  if (schedule.until) text += ` until ${schedule.until}`;
+  return text;
+}
+
+// One line for accounts:list: "Check each post: 5 checks · Count followers: Daily".
+function xStatisticsSummary(xs) {
+  const schedule = xs.posts === "custom" ? xScheduleText(xs.post_schedule) : "";
+  let text = `Check each post: ${xPostsWord(xs.posts)}${schedule ? ` (${schedule})` : ""} · Count followers: ${xFollowersWord(xs.followers)}`;
+  if (xs.state === "paused") text += " (paused: credits ran out)";
+  if (xs.billing === "own_x_app") text += " (read on your own X app, no credits)";
+  return text;
+}
+
+// The lines of accounts:get and accounts:x-statistics.
+function xStatisticsLines(xs) {
   const lines = [];
-  lines.push(`#${index + 1}  ID: ${account.id}`);
-  lines.push(`    Platform: ${account.platform}`);
-  lines.push(`    Username: ${account.username || account.display_name}`);
-  lines.push(`    Status: ${account.status}`);
+  const schedule = xs.posts === "custom" ? xScheduleText(xs.post_schedule) : "";
+  lines.push(`Check each post: ${xPostsWord(xs.posts)}${schedule ? ` (${schedule})` : ""}`);
+  lines.push(`Count followers: ${xFollowersWord(xs.followers)}`);
+  if (xs.state === "paused") lines.push(`State: ${X_PAUSED_TEXT}`);
+  else if (xs.state) lines.push(`State: ${xs.state === "off" ? "off (posts and followers both off)" : xs.state}`);
+  if (xs.billing === "own_x_app") lines.push("Paid with: your own X app (no credits)");
+  return lines;
+}
+
+// The lines of one account, not indented; accounts:list prints them under
+// "#n  ID: ...".
+function accountLines(account) {
+  const lines = [];
+  lines.push(`Platform: ${account.platform}`);
+  lines.push(`Username: ${account.username || account.display_name}`);
+  lines.push(`Status: ${account.status}`);
   if (account.content_types?.length) {
-    lines.push(`    Content types: ${account.content_types.join(", ")}`);
+    lines.push(`Content types: ${account.content_types.join(", ")}`);
+  }
+  if (account.platform === "x" && account.x_statistics) {
+    lines.push(`X statistics: ${xStatisticsSummary(account.x_statistics)}`);
   }
   if (account.boards?.length) {
-    lines.push(
-      `    Boards: ${account.boards.map((b) => `${b.name} (${b.id})`).join(", ")}`
-    );
+    lines.push(`Boards: ${account.boards.map((b) => `${b.name} (${b.id})`).join(", ")}`);
   }
   // Telegram: the chat type, the subscribers (members of a group) and the link.
   const details = account.platform === "telegram" ? account.platform_details : null;
   if (details) {
     const parts = [details.chat_type, typeof details.subscribers === "number" ? `${details.subscribers} subscribers` : null, details.url]
       .filter(Boolean);
-    if (parts.length) lines.push(`    Telegram: ${parts.join(", ")}`);
+    if (parts.length) lines.push(`Telegram: ${parts.join(", ")}`);
   }
   // Discord: the server name (a pasted webhook URL gives none: then the
   // webhook's name), the channel the OmniSocials bot read or the person gave,
@@ -1255,9 +1311,13 @@ function formatAccount(account, index) {
     const kind = discordDetails.channel_type && discordDetails.channel_type !== "text" ? ` (${discordDetails.channel_type})` : "";
     const channel = discordDetails.channel_name ? `#${discordDetails.channel_name}${kind}` : null;
     const parts = [name, channel, discordDetails.url].filter(Boolean);
-    if (parts.length) lines.push(`    Discord: ${parts.join(", ")}`);
+    if (parts.length) lines.push(`Discord: ${parts.join(", ")}`);
   }
-  return lines.join("\n");
+  return lines;
+}
+
+function formatAccount(account, index) {
+  return [`#${index + 1}  ID: ${account.id}`, ...accountLines(account).map((l) => `    ${l}`)].join("\n");
 }
 
 function formatMedia(item, index) {
@@ -3042,7 +3102,80 @@ async function cmdAccountsGet(config, flags, positional) {
   }
 
   const result = await apiRequest(config, "GET", `/accounts/${id}`);
+  // Raw JSON as before (scripts parse it); x_statistics is in it. accounts:list
+  // shows the X statistics setting in the app's words.
   handleResult(result, flags);
+}
+
+// handleResult plus a hint for the two billing gates of X statistics and
+// credits: the opt-in scope on the key (403 insufficient_scope) and the billing
+// rights of the key's creator (403 insufficient_permission from the scope
+// check, 403 forbidden from the route). Both fixes are outside the request.
+function handleBillingResult(result, flags, scope, why, formatter) {
+  const error = result && result.error;
+  if (error && ["insufficient_scope", "insufficient_permission", "forbidden"].includes(error.code)) {
+    if (flags.json) outputJson(result);
+    else console.error(`Error [${error.code}]: ${error.message}`);
+    console.error(
+      error.code === "insufficient_scope"
+        ? `${scope} is an opt-in scope: create a new API key with "${CREDITS_KEY_SWITCH}" switched on (Settings > API; it adds credits:read and accounts:write). The person who creates the key needs billing rights (manage_billing).`
+        : `${why} The person who created this API key needs billing rights (manage_billing) in the organisation; owners and admins have them. Ask one of them to make the change, or to create the key.`
+    );
+    process.exit(1);
+  }
+  handleResult(result, flags, formatter);
+}
+
+// accounts:x-statistics <id_x>: how often OmniSocials reads an X account
+// (PATCH /accounts/{id} with x_statistics). --posts full|light|off is how often
+// each post is checked (5 checks, 2 checks, Off), --followers daily|weekly|off
+// how often the follower count is read. A flag left out keeps its value. The
+// choice changes what the organisation pays in credits, so it needs the opt-in
+// scope accounts:write and billing rights for the key's creator. X accounts
+// only: the CLI refuses an id that does not end in _x before calling the API,
+// like the MCP tool set_x_statistics.
+async function cmdAccountsXStatistics(config, flags, positional) {
+  const usage =
+    "Usage: omnisocials accounts:x-statistics <account-id> [--posts full|light|off] [--followers daily|weekly|off]  (an X account, id ending in _x; pass one flag or both)";
+  const id = positional[0];
+  if (!id) exitWithError(usage);
+  if (!/_x$/.test(id)) {
+    exitWithError(
+      `accounts:x-statistics works on X accounts only: the account id ends in _x (for example 1234_x). "${id}" is not one; accounts:list shows the X account.`
+    );
+  }
+  const change = {};
+  if (flags.posts !== undefined) change.posts = pickOneOf("--posts", flags.posts, X_POSTS_CHOICES);
+  if (flags.followers !== undefined) {
+    change.followers = pickOneOf("--followers", flags.followers, X_FOLLOWERS_CHOICES);
+  }
+  if (!Object.keys(change).length) exitWithError(usage);
+
+  const result = await apiRequest(config, "PATCH", `/accounts/${encodeURIComponent(id)}`, {
+    x_statistics: change,
+  });
+  handleBillingResult(
+    result,
+    flags,
+    "accounts:write",
+    "Changing X statistics changes what the organisation pays in credits.",
+    (data) => {
+      const a = data || {};
+      const who = a.username ? `@${a.username} (${a.id || id})` : a.id || id;
+      console.log(`X statistics changed: ${who}`);
+      console.log("─".repeat(40));
+      if (!a.x_statistics) {
+        console.log(`The setting was saved, but it could not be read back: accounts:get ${id} shows it.`);
+        return;
+      }
+      console.log(xStatisticsLines(a.x_statistics).join("\n"));
+      console.log("");
+      console.log("It applies from the next check; the numbers read before stay.");
+      if (a.x_statistics.billing !== "own_x_app") {
+        console.log(`${X_STATISTICS_PRICES} credits:get shows the estimate a month.`);
+      }
+    }
+  );
 }
 
 // --- Analytics ---
@@ -3319,6 +3452,73 @@ async function cmdAnalyticsPosts(config, flags, positional) {
   });
 }
 
+// "2027-01-08 09:12 UTC" for an ISO time; "" when there is none.
+function utcMinute(iso) {
+  const d = iso ? new Date(iso) : null;
+  return d && !Number.isNaN(d.getTime()) ? `${d.toISOString().replace("T", " ").slice(0, 16)} UTC` : "";
+}
+
+// What to do after a refused "Update now" (POST /analytics/posts/{id}/refresh).
+const REFRESH_ERROR_HINTS = {
+  insufficient_credits:
+    "Nothing was read. The credit balance does not cover this check: add credits in OmniSocials (Settings > Organisation > Billing > Credits) or turn on auto-refill. credits:get shows the balance.",
+  refresh_not_available:
+    "Update now works on posts published to X only. analytics:post <id> shows the numbers stored for the other networks.",
+  refresh_limit:
+    "The limit is 5 checks of a post a day (its scheduled checks count too) and 100 Update now checks for the organisation. Try again after midnight UTC. analytics:post <id> shows the latest numbers.",
+  refresh_failed: "X did not answer and nothing was charged. Try again in a few minutes.",
+};
+
+// "Update now": read the X numbers of one published post now, outside its
+// check schedule. Half a credit a tweet (each part of a thread counts), half
+// more for a tweet with a video or GIF; free when the post was read this UTC
+// day (X bills a post once a day). At most 5 reads of a post a UTC day,
+// scheduled checks included. Needs analytics:read only, which every key has.
+async function cmdAnalyticsRefresh(config, flags, positional) {
+  const id = positional[0];
+  if (!id) {
+    exitWithError(
+      "Usage: omnisocials analytics:refresh <post-id>  (an OmniSocials post published to X; checks its X numbers now, half a credit a tweet)"
+    );
+  }
+  if (!/^\d+$/.test(id)) {
+    exitWithError(`analytics:refresh takes the numeric OmniSocials post id from posts:list, not a link (got "${id}")`);
+  }
+
+  const result = await apiRequest(config, "POST", `/analytics/posts/${id}/refresh`);
+
+  const error = result.error;
+  if (error && REFRESH_ERROR_HINTS[error.code] && !flags.json) {
+    console.error(`Error [${error.code}]: ${error.message}`);
+    console.error(REFRESH_ERROR_HINTS[error.code].replace("<id>", id));
+    process.exit(1);
+  }
+
+  handleResult(result, flags, (data) => {
+    const d = data || {};
+    const tweets = Array.isArray(d.tweets) ? d.tweets : [];
+    const at = utcMinute(d.read_at) ? ` at ${utcMinute(d.read_at)}` : "";
+    console.log(`X numbers checked: post ${d.post_id ?? id}${at}`);
+    console.log("─".repeat(40));
+    if (!tweets.length) {
+      console.log(`X gave no numbers for this post. analytics:post ${id} shows the numbers stored before.`);
+    }
+    tweets.forEach((t, i) => {
+      const label = tweets.length > 1 ? `Tweet ${i + 1} of ${tweets.length} (${t.id})` : `Tweet ${t.id}`;
+      const parts = metricRows(t.metrics || {}).map(([name, n]) => `${n} ${name}`);
+      console.log(`${label}: ${parts.join(", ") || "no numbers"}`);
+    });
+    if (typeof d.credits_used === "number") {
+      console.log(
+        d.credits_used > 0
+          ? `Credits used: ${d.credits_used}`
+          : "Credits used: 0 (free: already read today (UTC), or X statistics are not charged yet)"
+      );
+    }
+    if (tweets.length) console.log(`analytics:post ${id} now shows these numbers too.`);
+  });
+}
+
 async function cmdAnalyticsOverview(config, flags) {
   const tag = flags.tag !== undefined ? parseTagFilter("--tag", flags.tag) : undefined;
   const result = await apiRequest(config, "GET", "/analytics/overview", undefined, {
@@ -3453,6 +3653,107 @@ async function cmdAnalyticsBestTimes(config, flags) {
     } else {
       console.log(`\nBased on ${result.sample_size} posts from the last ${result.window_days} days (metric: ${result.metric}, times in ${result.timezone}).`);
     }
+  });
+}
+
+// --- Credits ---
+// GET /credits: the organisation's credit balance (1 credit = €0.01),
+// auto-refill, the credits used this month per reason, and the X statistics
+// overview (state, the date charging starts, prices, this month's reads, and
+// per X account its setting and estimate a month). Opt-in scope credits:read
+// plus billing rights for the key's creator. Credits are bought in the app;
+// the API only reads them.
+
+// The ledger reasons of `this_month`, in the words of the app's Credits page.
+const CREDIT_REASON_WORDS = {
+  x_statistics: "X statistics",
+  x_url_post: "X link posts",
+  x_dm_send: "X DMs sent",
+  x_dm_receive: "X DMs received",
+  slack_ai_message: "Slack AI messages",
+};
+const creditReasonWord = (reason) =>
+  CREDIT_REASON_WORDS[reason] || String(reason).replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase());
+
+// "24 November 2026" (UTC) for an ISO time; "" when there is none.
+function utcDay(iso) {
+  const d = iso ? new Date(iso) : null;
+  if (!d || Number.isNaN(d.getTime())) return "";
+  return d.toLocaleDateString("en-GB", { day: "numeric", month: "long", year: "numeric", timeZone: "UTC" });
+}
+
+function chargingText(charging) {
+  const from = utcDay(charging && charging.from);
+  if (!from) return "no start date set yet: reads are counted, nothing comes off the balance";
+  if (charging.active) return `on since ${from}`;
+  return `starts on ${from}; until then reads are counted, nothing comes off the balance`;
+}
+
+async function cmdCreditsGet(config, flags) {
+  const result = await apiRequest(config, "GET", "/credits");
+  handleBillingResult(result, flags, "credits:read", "Credits are billing information.", (data) => {
+    const d = data || {};
+    const balance = Number(d.balance);
+    console.log("Credits");
+    console.log("─".repeat(40));
+    console.log(
+      `Balance: ${Number.isFinite(balance) ? `${balance} credits (€${(balance / 100).toFixed(2)})` : "-"}`
+    );
+    console.log(`Auto-refill: ${d.auto_refill && d.auto_refill.enabled ? "on" : "off"}`);
+    const used = Object.entries(d.this_month || {}).filter(([, n]) => Number(n) > 0);
+    if (used.length) {
+      console.log("Used this month (UTC):");
+      for (const [reason, n] of used) console.log(`  ${creditReasonWord(reason)}: ${n}`);
+    } else {
+      console.log("Used this month (UTC): nothing");
+    }
+
+    const xs = d.x_statistics;
+    if (!xs) return;
+    console.log("");
+    console.log("X statistics");
+    console.log("─".repeat(40));
+    if (xs.state === "paused") {
+      const since = utcMinute(xs.paused_at);
+      console.log(`State: ${X_PAUSED_TEXT}${since ? ` (since ${since})` : ""}`);
+    } else {
+      console.log(`State: ${xs.state || "active"}`);
+    }
+    console.log(`Charging: ${chargingText(xs.charging)}`);
+    const p = xs.prices || {};
+    if (p.post_read !== undefined) {
+      console.log(
+        `Prices: ${p.post_read} credits a post check, ${p.media_read} more for a tweet with a video or GIF, ${p.follower_read} a follower count; a post read today (UTC) is free to read again`
+      );
+    }
+    const m = xs.this_month;
+    if (m) {
+      console.log(
+        `This month: ${m.post_reads ?? 0} post checks, ${m.media_reads ?? 0} video or GIF reads, ${m.follower_reads ?? 0} follower counts, ${m.refreshes ?? 0} Update now: ${m.credits ?? 0} credits`
+      );
+    }
+    const accounts = Array.isArray(xs.accounts) ? xs.accounts : [];
+    if (!accounts.length) {
+      console.log("No X account is connected in this organisation.");
+      return;
+    }
+    console.log(`Estimate a month: ${xs.total_credits_month ?? 0} credits for all X accounts`);
+    console.log("");
+    printTable(
+      ["Account", "Check each post", "Count followers", "Tweets (30 days)", "Credits a month"],
+      accounts.map((a) => [
+        a.handle ? `${a.handle} (${a.account_id})` : String(a.account_id),
+        xPostsWord(a.posts),
+        xFollowersWord(a.followers),
+        String(a.tweets_30d ?? 0),
+        String(a.credits_month ?? 0),
+      ]),
+      new Set([3, 4])
+    );
+    console.log("");
+    console.log(
+      "Change an account with accounts:x-statistics <account-id> --posts full|light|off --followers daily|weekly|off (full = 5 checks, light = 2 checks)."
+    );
   });
 }
 
@@ -3747,14 +4048,19 @@ async function cmdInboxDelete(config, flags, positional) {
 // Every event the API accepts in --events. post.approved / post.rejected fire
 // when the review of a post in an approval workflow ends; their payload
 // carries data.approval { status, decided_by, reason } and an empty targets
-// array. The API validates the list (400 on anything else), the CLI only
-// prints it.
+// array. x_statistics.paused / x_statistics.resumed fire when the
+// organisation's X statistics pause at 0 credits and start again after credits
+// came in; their data is { workspace_id, account_id, reason }, one event per
+// workspace with X. The API validates the list (400 on anything else), the CLI
+// only prints it.
 const WEBHOOK_EVENTS = [
   "post.scheduled",
   "post.published",
   "post.failed",
   "post.approved",
   "post.rejected",
+  "x_statistics.paused",
+  "x_statistics.resumed",
 ];
 
 async function cmdWebhooksList(config, flags) {
@@ -4234,16 +4540,21 @@ AUDIO
   audio:search ["<song/artist>"] Instagram Reel music from Meta's licensed catalog; no query = trending [--type music|original_sound]
 
 ACCOUNTS
-  accounts:list                  List connected accounts
-  accounts:get <id>              Get account details
+  accounts:list                  List connected accounts; an X account shows its X statistics setting
+  accounts:get <id>              Get account details (--json for the raw answer)
+  accounts:x-statistics <id>     How often an X account's statistics are read, paid in credits [--posts full|light|off (5 checks, 2 checks, Off) --followers daily|weekly|off]; one flag or both (accounts:write + billing rights)
 
 ANALYTICS
   analytics:post <id>            Get post analytics
   analytics:posts <id,id,...>    Get analytics for up to 100 posts in one call (bulk)
+  analytics:refresh <id>         Update now: check the X numbers of a published post now; half a credit a tweet (1 with a video or GIF), free when read today (UTC), max 5 a post a day
   analytics:overview             Workspace analytics [--period --start-date --end-date --tag "<name or id,...>" (only posts with any of these tags)]
   analytics:accounts             Account analytics [--platform --date]
   analytics:best-times           Recommended posting slots [--platform (required) --timezone]
   analytics:tags                 Compare tags: per tag the posts, median impressions, engagement rate and how it did vs your normal (each post against its own channel's median) [--start-date --end-date (default last 90 days) --platform --min-posts <1-50> (default 5)]
+
+CREDITS (needs the opt-in credits:read scope and billing rights)
+  credits:get                    Credit balance, auto-refill, credits used this month, and X statistics: state, charging start date, per X account the setting and the estimate a month
 
 INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:list                     List conversations [--platform --type dm|comment|mention --unread --unanswered --limit --cursor]
@@ -4257,7 +4568,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
 
 WEBHOOKS
   webhooks:list                  List webhooks (the workspace's and the organisation-wide ones)
-  webhooks:create                Create webhook [--url --events] (events: post.scheduled, post.published, post.failed, post.approved, post.rejected)
+  webhooks:create                Create webhook [--url --events] (events: ${WEBHOOK_EVENTS.join(", ")})
   webhooks:get <id>              Get webhook details
   webhooks:update <id>           Update webhook [--url --events --active] (--url moves an organisation-wide webhook to this workspace)
   webhooks:delete <id>           Delete a webhook
@@ -4404,6 +4715,9 @@ EXAMPLES
   omnisocials posts:create --text "Why most hooks fail" --channels tiktok --media-urls "https://example.com/hook.mp4" --tags "Question hook,Talking head"
   omnisocials tags:apply --posts 1024,1025,1026 --add "Question hook"
   omnisocials analytics:tags --start-date 2026-08-01 --platform tiktok
+  omnisocials credits:get
+  omnisocials accounts:x-statistics 1234_x --posts light --followers weekly
+  omnisocials analytics:refresh 9123
   omnisocials limits --platform youtube
   omnisocials feature:request --summary "Publish long YouTube videos, not only Shorts, so the whole channel runs from OmniSocials." --platform youtube --limit-id youtube.long_videos
   omnisocials feature:list
@@ -4458,12 +4772,15 @@ const COMMANDS = {
   "audio:search": { handler: cmdAudioSearch },
   "accounts:list": { handler: cmdAccountsList },
   "accounts:get": { handler: cmdAccountsGet },
+  "accounts:x-statistics": { handler: cmdAccountsXStatistics },
   "analytics:post": { handler: cmdAnalyticsPost },
   "analytics:posts": { handler: cmdAnalyticsPosts },
+  "analytics:refresh": { handler: cmdAnalyticsRefresh },
   "analytics:overview": { handler: cmdAnalyticsOverview },
   "analytics:accounts": { handler: cmdAnalyticsAccounts },
   "analytics:best-times": { handler: cmdAnalyticsBestTimes },
   "analytics:tags": { handler: cmdAnalyticsTags },
+  "credits:get": { handler: cmdCreditsGet },
   "inbox:list": { handler: cmdInboxList },
   "inbox:next": { handler: cmdInboxNext },
   "inbox:messages": { handler: cmdInboxMessages },

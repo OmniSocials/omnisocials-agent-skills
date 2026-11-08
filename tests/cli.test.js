@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.40.2");
+    expect(stdout).toContain("OmniSocials CLI v1.41.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -4453,6 +4453,399 @@ describe("Approval step and webhooks (mock API)", () => {
         expect(stdout).toContain("X-OmniSocials-Signature-Previous");
       }
     );
+  });
+});
+
+describe("X statistics and credits (mock API)", () => {
+  const auth = (baseUrl) => ["--api-key", MOCK_KEY, "--base-url", baseUrl];
+  const xStats = (over = {}) => ({
+    posts: "full",
+    followers: "daily",
+    post_schedule: null,
+    source: "default",
+    billing: "credits",
+    state: "active",
+    paused_reason: null,
+    ...over,
+  });
+  const xAccount = (over = {}) => ({
+    id: "1234_x",
+    platform: "x",
+    username: "yourbrand",
+    display_name: "Your Brand",
+    content_types: ["post"],
+    status: "active",
+    needs_reconnect: false,
+    connected_at: "2026-03-02T10:14:00.000Z",
+    x_statistics: xStats(),
+    ...over,
+  });
+
+  it("accounts:x-statistics refuses an id that is not an X account, before any call", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: {} } }),
+      async (baseUrl, calls) => {
+        const { stderr, exitCode } = await run(["accounts:x-statistics", "1234_instagram", "--posts", "light", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("works on X accounts only: the account id ends in _x");
+        expect(stderr).toContain('"1234_instagram" is not one');
+        expect(calls.length).toBe(0);
+      }
+    );
+  });
+
+  it("accounts:x-statistics needs an id and at least one of --posts / --followers", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: {} } }),
+      async (baseUrl, calls) => {
+        const noId = await run(["accounts:x-statistics", ...auth(baseUrl)]);
+        expect(noId.exitCode).not.toBe(0);
+        expect(noId.stderr).toContain("Usage: omnisocials accounts:x-statistics <account-id>");
+
+        const noFlag = await run(["accounts:x-statistics", "1234_x", ...auth(baseUrl)]);
+        expect(noFlag.exitCode).not.toBe(0);
+        expect(noFlag.stderr).toContain("pass one flag or both");
+        expect(calls.length).toBe(0);
+      }
+    );
+  });
+
+  it("accounts:x-statistics refuses values the app does not offer", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: {} } }),
+      async (baseUrl, calls) => {
+        const posts = await run(["accounts:x-statistics", "1234_x", "--posts", "custom", ...auth(baseUrl)]);
+        expect(posts.exitCode).not.toBe(0);
+        expect(posts.stderr).toContain('--posts must be one of full|light|off (got "custom")');
+
+        const followers = await run(["accounts:x-statistics", "1234_x", "--followers", "hourly", ...auth(baseUrl)]);
+        expect(followers.exitCode).not.toBe(0);
+        expect(followers.stderr).toContain('--followers must be one of daily|weekly|off (got "hourly")');
+
+        const bare = await run(["accounts:x-statistics", "1234_x", "--posts", ...auth(baseUrl)]);
+        expect(bare.exitCode).not.toBe(0);
+        expect(bare.stderr).toContain("--posts must be one of full|light|off");
+        expect(calls.length).toBe(0);
+      }
+    );
+  });
+
+  it("accounts:x-statistics sends only the flags given and prints the setting in the app's words", async () => {
+    await withMockServer(
+      (req, body) => ({
+        status: 200,
+        json: { data: xAccount({ x_statistics: xStats({ ...body.x_statistics, source: "account" }) }) },
+      }),
+      async (baseUrl, calls) => {
+        const one = await run(["accounts:x-statistics", "1234_x", "--posts", "light", ...auth(baseUrl)]);
+        expect(one.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/accounts/1234_x");
+        expect(calls[0].body).toEqual({ x_statistics: { posts: "light" } });
+        expect(one.stdout).toContain("X statistics changed: @yourbrand (1234_x)");
+        expect(one.stdout).toContain("Check each post: 2 checks");
+        expect(one.stdout).toContain("Count followers: Daily");
+        expect(one.stdout).toContain("It applies from the next check");
+        expect(one.stdout).toContain("Half a credit a post check (1 credit for a post with a video or GIF), 1 credit a follower count");
+
+        const both = await run(["accounts:x-statistics", "1234_x", "--posts", "off", "--followers", "weekly", ...auth(baseUrl)]);
+        expect(both.exitCode).toBe(0);
+        expect(calls[1].body).toEqual({ x_statistics: { posts: "off", followers: "weekly" } });
+        expect(both.stdout).toContain("Check each post: Off");
+        expect(both.stdout).toContain("Count followers: Weekly");
+      }
+    );
+  });
+
+  it("accounts:x-statistics names the opt-in scope on 403 insufficient_scope", async () => {
+    await withMockServer(
+      () => ({
+        status: 403,
+        json: { error: { code: "insufficient_scope", message: "This API key does not have the 'accounts:write' scope." } },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run(["accounts:x-statistics", "1234_x", "--posts", "light", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [insufficient_scope]");
+        expect(stderr).toContain('accounts:write is an opt-in scope: create a new API key with "Credits and X statistics" switched on');
+        expect(stderr).toContain("billing rights (manage_billing)");
+      }
+    );
+  });
+
+  it("accounts:x-statistics explains billing rights on 403 insufficient_permission and forbidden", async () => {
+    for (const code of ["insufficient_permission", "forbidden"]) {
+      await withMockServer(
+        () => ({ status: 403, json: { error: { code, message: "No billing rights." } } }),
+        async (baseUrl) => {
+          const { stderr, exitCode } = await run(["accounts:x-statistics", "1234_x", "--followers", "off", ...auth(baseUrl)]);
+          expect(exitCode).not.toBe(0);
+          expect(stderr).toContain(`Error [${code}]`);
+          expect(stderr).toContain("Changing X statistics changes what the organisation pays in credits.");
+          expect(stderr).toContain("The person who created this API key needs billing rights (manage_billing)");
+        }
+      );
+    }
+  });
+
+  it("accounts:x-statistics passes a 400 not_supported through", async () => {
+    await withMockServer(
+      () => ({
+        status: 400,
+        json: { error: { code: "not_supported", message: "Only X accounts have settings to change here (x_statistics)." } },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run(["accounts:x-statistics", "9_x", "--posts", "full", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [not_supported]: Only X accounts have settings to change here");
+      }
+    );
+  });
+
+  it("accounts:list shows the X statistics setting, and paused when credits ran out", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: [
+            xAccount(),
+            xAccount({ id: "5678_x", username: "otherbrand", x_statistics: xStats({ posts: "light", followers: "weekly", state: "paused", paused_reason: "insufficient_credits" }) }),
+            { id: "1234_instagram", platform: "instagram", username: "yourbrand", status: "active", content_types: ["post"] },
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["accounts:list", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("X statistics: Check each post: 5 checks · Count followers: Daily");
+        expect(stdout).toContain("X statistics: Check each post: 2 checks · Count followers: Weekly (paused: credits ran out)");
+        expect(stdout.match(/X statistics:/g)).toHaveLength(2);
+      }
+    );
+  });
+
+  it("accounts:get prints the raw JSON as before, x_statistics included", async () => {
+    const account = xAccount({ x_statistics: xStats({ state: "paused", paused_reason: "insufficient_credits" }) });
+    await withMockServer(
+      () => ({ status: 200, json: { data: account } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["accounts:get", "1234_x", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].path).toBe("/accounts/1234_x");
+        const parsed = JSON.parse(stdout);
+        expect((parsed.data || parsed).x_statistics.posts).toBe("full");
+        expect((parsed.data || parsed).x_statistics.state).toBe("paused");
+      }
+    );
+  });
+
+  it("analytics:refresh needs a numeric post id, before any call", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: { data: {} } }),
+      async (baseUrl, calls) => {
+        const none = await run(["analytics:refresh", ...auth(baseUrl)]);
+        expect(none.exitCode).not.toBe(0);
+        expect(none.stderr).toContain("Usage: omnisocials analytics:refresh <post-id>");
+
+        const link = await run(["analytics:refresh", "https://x.com/yourbrand/status/1859000000000000000", ...auth(baseUrl)]);
+        expect(link.exitCode).not.toBe(0);
+        expect(link.stderr).toContain("takes the numeric OmniSocials post id from posts:list");
+        expect(calls.length).toBe(0);
+      }
+    );
+  });
+
+  it("analytics:refresh prints the new numbers per tweet and the credits used", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: {
+            post_id: 9123,
+            tweets: [
+              { id: "1859000000000000000", metrics: { views: 3412, likes: 41, comments: 9, reposts: 6 }, read_at: "2027-01-08T09:12:04.000Z" },
+              { id: "1859000000000000001", metrics: { views: 800, likes: 5 }, read_at: "2027-01-08T09:12:04.000Z" },
+            ],
+            credits_used: 1.5,
+            read_at: "2027-01-08T09:12:04.000Z",
+          },
+        },
+      }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["analytics:refresh", "9123", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("POST");
+        expect(calls[0].path).toBe("/analytics/posts/9123/refresh");
+        expect(stdout).toContain("X numbers checked: post 9123 at 2027-01-08 09:12 UTC");
+        expect(stdout).toContain("Tweet 1 of 2 (1859000000000000000): 3412 views, 41 likes, 9 comments, 6 reposts");
+        expect(stdout).toContain("Tweet 2 of 2 (1859000000000000001): 800 views, 5 likes");
+        expect(stdout).toContain("Credits used: 1.5");
+        expect(stdout).toContain("analytics:post 9123 now shows these numbers too.");
+      }
+    );
+  });
+
+  it("analytics:refresh says a second read today was free", async () => {
+    await withMockServer(
+      () => ({
+        status: 200,
+        json: {
+          data: {
+            post_id: 9123,
+            tweets: [{ id: "1859000000000000000", metrics: { views: 3412 }, read_at: "2027-01-08T09:12:04.000Z" }],
+            credits_used: 0,
+            read_at: "2027-01-08T11:00:00.000Z",
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["analytics:refresh", "9123", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("Tweet 1859000000000000000: 3412 views");
+        expect(stdout).toContain("Credits used: 0 (free: already read today (UTC)");
+      }
+    );
+  });
+
+  it("analytics:refresh explains 402, 409, 429 and 502", async () => {
+    const cases = [
+      [402, "insufficient_credits", "Not enough credits to check the X statistics of this post now.", "add credits in OmniSocials (Settings > Organisation > Billing > Credits)"],
+      [409, "refresh_not_available", "Update now works on published X posts only.", "Update now works on posts published to X only. analytics:post 9123 shows"],
+      [429, "refresh_limit", "This post was checked 5 times today. Try again tomorrow (UTC).", "Try again after midnight UTC. analytics:post 9123 shows the latest numbers."],
+      [502, "refresh_failed", "X did not answer. Nothing was charged. Try again in a few minutes.", "X did not answer and nothing was charged."],
+    ];
+    for (const [status, code, message, hint] of cases) {
+      await withMockServer(
+        () => ({ status, json: { error: { code, message } } }),
+        async (baseUrl) => {
+          const { stderr, exitCode } = await run(["analytics:refresh", "9123", ...auth(baseUrl)]);
+          expect(exitCode).not.toBe(0);
+          expect(stderr).toContain(`Error [${code}]: ${message}`);
+          expect(stderr).toContain(hint);
+        }
+      );
+    }
+  });
+
+  it("analytics:refresh --json prints the raw error without the hint", async () => {
+    await withMockServer(
+      () => ({ status: 429, json: { error: { code: "refresh_limit", message: "This post was checked 5 times today." } } }),
+      async (baseUrl) => {
+        const { stdout, stderr, exitCode } = await run(["analytics:refresh", "9123", "--json", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(JSON.parse(stdout).error.code).toBe("refresh_limit");
+        expect(stderr).not.toContain("midnight UTC");
+      }
+    );
+  });
+
+  const creditsAnswer = (xOver = {}) => ({
+    data: {
+      balance: 412,
+      auto_refill: { enabled: false },
+      this_month: { x_statistics: 31, x_url_post: 40, x_dm_send: 6, some_new_reason: 2 },
+      x_statistics: {
+        state: "active",
+        paused_at: null,
+        charging: { active: false, from: "2026-11-24T00:00:00.000Z" },
+        prices: { post_read: 0.5, media_read: 0.5, follower_read: 1 },
+        total_credits_month: 72.9,
+        this_month: { post_reads: 52, media_reads: 6, follower_reads: 8, refreshes: 2, credits: 37 },
+        accounts: [
+          { account_id: "1234_x", workspace_id: 1234, handle: "@yourbrand", posts: "full", followers: "daily", tweets_30d: 20, credits_month: 72.9 },
+          { account_id: "5678_x", workspace_id: 5678, handle: null, posts: "light", followers: "weekly", tweets_30d: 4, credits_month: 6 },
+        ],
+        ...xOver,
+      },
+    },
+  });
+
+  it("credits:get prints the balance, this month by reason and the X statistics per account", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: creditsAnswer() }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["credits:get", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].method).toBe("GET");
+        expect(calls[0].path).toBe("/credits");
+        expect(stdout).toContain("Balance: 412 credits (€4.12)");
+        expect(stdout).toContain("Auto-refill: off");
+        expect(stdout).toContain("  X statistics: 31");
+        expect(stdout).toContain("  X link posts: 40");
+        expect(stdout).toContain("  X DMs sent: 6");
+        expect(stdout).toContain("  Some new reason: 2");
+        expect(stdout).toContain("State: active");
+        expect(stdout).toContain("Charging: starts on 24 November 2026; until then reads are counted, nothing comes off the balance");
+        expect(stdout).toContain("Prices: 0.5 credits a post check, 0.5 more for a tweet with a video or GIF, 1 a follower count");
+        expect(stdout).toContain("This month: 52 post checks, 6 video or GIF reads, 8 follower counts, 2 Update now: 37 credits");
+        expect(stdout).toContain("Estimate a month: 72.9 credits for all X accounts");
+        expect(stdout).toMatch(/@yourbrand \(1234_x\)\s+5 checks\s+Daily\s+20\s+72\.9/);
+        expect(stdout).toMatch(/5678_x\s+2 checks\s+Weekly\s+4\s+6/);
+        expect(stdout).toContain("accounts:x-statistics <account-id>");
+      }
+    );
+  });
+
+  it("credits:get prints the charging state when it is on, not set, or paused", async () => {
+    await withMockServer(
+      () => ({ status: 200, json: creditsAnswer({ charging: { active: true, from: "2026-11-24T00:00:00.000Z" } }) }),
+      async (baseUrl) => {
+        const { stdout } = await run(["credits:get", ...auth(baseUrl)]);
+        expect(stdout).toContain("Charging: on since 24 November 2026");
+      }
+    );
+    await withMockServer(
+      () => ({ status: 200, json: creditsAnswer({ charging: { active: false, from: null } }) }),
+      async (baseUrl) => {
+        const { stdout } = await run(["credits:get", ...auth(baseUrl)]);
+        expect(stdout).toContain("Charging: no start date set yet");
+      }
+    );
+    await withMockServer(
+      () => ({ status: 200, json: creditsAnswer({ state: "paused", paused_at: "2026-12-14T06:00:12.000Z" }) }),
+      async (baseUrl) => {
+        const { stdout } = await run(["credits:get", ...auth(baseUrl)]);
+        expect(stdout).toContain("State: paused: credits ran out. Posts still go out");
+        expect(stdout).toContain("(since 2026-12-14 06:00 UTC)");
+      }
+    );
+  });
+
+  it("credits:get names the opt-in scope on 403 insufficient_scope", async () => {
+    await withMockServer(
+      () => ({
+        status: 403,
+        json: { error: { code: "insufficient_scope", message: "This API key does not have the 'credits:read' scope." } },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run(["credits:get", ...auth(baseUrl)]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("Error [insufficient_scope]");
+        expect(stderr).toContain('credits:read is an opt-in scope: create a new API key with "Credits and X statistics" switched on');
+      }
+    );
+  });
+
+  it("webhooks:create lists the X statistics events, and help lists the new commands", async () => {
+    const usage = await run(["webhooks:create", "--api-key", MOCK_KEY, "--base-url", "http://localhost:0"]);
+    expect(usage.exitCode).not.toBe(0);
+    expect(usage.stderr).toContain("x_statistics.paused, x_statistics.resumed");
+
+    await withMockServer(
+      (req, body) => ({ status: 201, json: { data: { id: "wh-9", url: body.url, events: body.events, secret: "fake-webhook-secret" } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "webhooks:create", "--url", "https://example.com/hook", "--events", "x_statistics.paused,x_statistics.resumed", ...auth(baseUrl),
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body).toEqual({ url: "https://example.com/hook", events: ["x_statistics.paused", "x_statistics.resumed"] });
+      }
+    );
+
+    const { stdout } = await run(["--help"]);
+    expect(stdout).toContain("accounts:x-statistics <id>");
+    expect(stdout).toContain("analytics:refresh <id>");
+    expect(stdout).toContain("credits:get");
   });
 });
 

@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.41.0 (2026-11-12)
+
+### Added
+- **X statistics on credits.** X bills every read of a post's statistics, and OmniSocials passes X's price on as credits: half a credit a post check (1 credit for a post with a video or GIF), 1 credit a follower count, free when the post was already read that UTC day. Reads cost credits from the date in `charging.from` of `credits:get`; before it they are counted but nothing comes off the balance. Every other network's statistics stay part of the plan.
+- **`accounts:x-statistics <account-id> [--posts full|light|off] [--followers daily|weekly|off]`.** Calls `PATCH /accounts/{id}` with `x_statistics` and prints the new setting in the app's words: "Check each post" 5 checks / 2 checks / Off, "Count followers" Daily / Weekly / Off. A flag left out keeps its value; the default of an account never set is 5 checks + Daily. The CLI refuses an id that does not end in `_x`, a command without either flag and a value outside the lists before it calls the API. Needs the opt-in scope `accounts:write` (the "Credits and X statistics" switch when the key is created) and billing rights (manage_billing) for the key's creator; on `403 insufficient_scope` the CLI names the switch, on `403 insufficient_permission` / `forbidden` the billing rights.
+- **`analytics:refresh <post-id>` (Update now).** Calls `POST /analytics/posts/{id}/refresh`: reads the X numbers of one published post now and prints them per tweet (one line per part of a thread) with the credits used ("free: already read today (UTC)" at 0). At most 5 reads of a post a UTC day, scheduled checks included. `402 insufficient_credits`, `409 refresh_not_available` (no published X tweet), `429 refresh_limit` and `502 refresh_failed` (nothing charged) each print what to do next. The CLI refuses an id that is not a number before the call. Needs `analytics:read` only.
+- **`credits:get`.** Calls `GET /credits` and prints the balance (with the euro value), auto-refill, the credits used this month per reason, and the X statistics: the state (paused since when, when credits ran out), the charging start date, the prices, this month's reads and their credits, and a table of every X account with its setting, its tweets of the last 30 days and its estimate a month. Needs the opt-in scope `credits:read` (the same switch) and billing rights for the key's creator.
+- **Webhook events `x_statistics.paused` and `x_statistics.resumed`** in the `webhooks:create` help and usage: the organisation's X statistics paused because its credits ran out, and run again after credits came in (`data`: `workspace_id`, `account_id`, `reason`).
+- **SKILL.md: "X statistics and credits".** The prices, the choices, the charging date and what happens at 0 credits; safety rule 11 (tell the user what a change means and ask before `accounts:x-statistics`; run `analytics:refresh` only when the user asks for fresh X numbers), Common Actions rows, an example, the error codes and a tip.
+
+### Changed
+- **`accounts:list` shows the X statistics setting of an X account** (`X statistics: Check each post: 5 checks · Count followers: Daily`, with `(paused: credits ran out)` while the organisation's credits are at 0).
+- **`accounts:get`** still prints the raw JSON; an X account's answer now carries `x_statistics`.
+
 ## 1.40.2 (2026-11-08)
 
 ### Changed

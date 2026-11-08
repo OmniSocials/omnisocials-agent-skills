@@ -1,6 +1,6 @@
 ---
 name: omnisocials
-description: Manage social media across 13 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram channels and groups, Discord channels). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram and Facebook (and DM keyword automations on X), tag posts by hook or format and compare the tags in analytics, look up what OmniSocials cannot do (and why) and send feature requests, and configure webhooks via the OmniSocials API.
+description: Manage social media across 13 platforms (Instagram, Facebook, LinkedIn Profile + Page, YouTube, TikTok, X, Pinterest, Bluesky, Threads, Mastodon, Google Business, Telegram channels and groups, Discord channels). Create posts, stories, reels, upload media, organize folders, view analytics, read and reply to the social inbox (DMs, comments, mentions), set up comment-to-DM automations on Instagram and Facebook (and DM keyword automations on X), tag posts by hook or format and compare the tags in analytics, read the credit balance and choose how often X statistics are read (X statistics cost credits), look up what OmniSocials cannot do (and why) and send feature requests, and configure webhooks via the OmniSocials API.
 ---
 
 # OmniSocials Skill
@@ -59,6 +59,7 @@ IMPORTANT: Follow these rules at all times.
 8. **Read the approval review before you report on or change a post in review.** When a post shows `approval_status: "rejected"` or `"pending"` (post `status` `rejected` or `in_approval`), run `posts:approval <id>` first. It says who decided, the reason and what the reviewers wrote. Do not guess why a post was rejected or who it waits for, and do not edit, reschedule or recreate the post before you have read the review and told the user what it says.
 9. **A comment-to-DM automation sends DMs in the account's name.** Before you create one (`automations:create`, or `--dm-keywords` / `--dm-message` on a post), show the user the exact DM text and the keyword and get their confirmation; the DM goes to every person who comments the keyword, once each, and a sent DM cannot be taken back. NEVER use `--match any` (or `--dm-match any`), which answers every comment, unless the user asked for every comment. On X (`--platform x`) the automation answers the DMs people send the account (every first DM with `--match any`), OmniSocials adds "Reply STOP to stop automatic messages." under each answer, and a person who replies STOP gets no automatic DM from that account again. The Automations scopes are opt-in on the API key: a `403 insufficient_scope` means the user has to enable Automations on the key (Settings > API), not that the request was wrong.
 10. **Check `limits` before you say something is not possible, and send a feature request only after the user agreed.** See "When OmniSocials cannot do something" below. A request goes to the OmniSocials team with the user's name and email. Never put the conversation, other people's personal data or secrets in its summary.
+11. **X statistics cost credits: ask before you change what the organisation pays.** Before `accounts:x-statistics`, tell the user what the choice means (how often posts are checked and followers counted, and the estimate a month from `credits:get`) and get their yes. Run `analytics:refresh` (Update now) only when the user asks for fresh X numbers, and ask before you run it on many posts: each run can use credits. See "X statistics and credits" below.
 
 ## When OmniSocials cannot do something
 
@@ -97,6 +98,9 @@ When the user asks for something no command does, do not guess why.
 | "Post a reel with music" | `audio:search "<song or artist>"` (no query = trending), then `posts:create ... --type reel --instagram-audio-id <id>` |
 | "Post this tall (9:16) photo to Instagram" | `media:check --media-id <id>`; when the `Image fit` block says Instagram cuts it, ask "crop to 4:5 or keep the original?", then `posts:create ... --media-ids <id> --media-fit instagram=crop` or `instagram=keep`. Relay the `[image_fit]` warning the CLI prints |
 | "How are my posts doing?" | `analytics:overview --period 7d`, or `analytics:posts <id,id,...>` for many posts at once |
+| "Get the latest X numbers of that post" / "Update the X stats now" | `analytics:refresh <post-id>` (Update now; X only; half a credit a tweet, 1 for a tweet with a video or GIF, free when the post was already read today, UTC; at most 5 a post a day). Ask first when it is more than one post |
+| "How many credits do I have?" / "What do my X statistics cost?" | `credits:get`: the balance, auto-refill, the credits used this month per reason, and per X account its setting and its estimate a month. Needs the opt-in `credits:read` scope and billing rights |
+| "Check my X posts less often" / "X statistics cost too much" | `credits:get` for the estimate per account, tell the user what each choice means, then after their yes `accounts:x-statistics <account-id ending in _x> --posts light` (2 checks) or `--posts off`, and/or `--followers weekly` or `--followers off`. Needs the opt-in `accounts:write` scope and billing rights |
 | "Tag this post as a question hook" / "Label my posts by format" | `tags:list` first and reuse a name that exists, then `posts:create ... --tags "Question hook"` on a new post, or `tags:apply --posts <id,id> --add "Question hook"` on posts that exist (published ones too, up to 500 at once). A new name becomes a tag |
 | "Which hooks / formats work best?" | `analytics:tags` (add `--platform tiktok` or `--start-date` for one channel or period): per tag how its posts did against the user's normal, fair across channels. Tag older posts first with `tags:apply` when few posts carry tags |
 | "Show my posts with that tag" | `posts:list --tag "Question hook"` (several: `--tag "Question hook,Tutorial"` = any of them); `analytics:overview --tag "Question hook"` for their numbers |
@@ -121,6 +125,7 @@ When the user asks for something no command does, do not guess why.
 | "I want to review posts before they go out" / "Send it to me for approval" | `approval-workflows:list` to find the workflow id, then `posts:create ... --schedule <ISO8601> --approval-workflow <id>`. The post lands as `in_approval`, the approvers are notified, and it publishes at the scheduled time once the last step approves (Approvals page in the dashboard, or `posts:approve`). If no workflow exists, tell the user to create one in the dashboard under Approvals |
 | "Set up a webhook" | `webhooks:create --url "https://..." --events post.published,post.failed` |
 | "Tell my system when a post is approved or rejected" | `webhooks:create --url "https://..." --events post.approved,post.rejected` |
+| "Tell my system when X statistics stop because credits ran out" | `webhooks:create --url "https://..." --events x_statistics.paused,x_statistics.resumed` |
 | "Can OmniSocials do X?" / the user asks for something no command does | `limits --platform <id>` (or `--area`), then tell the user what is not possible, why, and what to do instead. See "When OmniSocials cannot do something" |
 | "Ask OmniSocials to build this" / "I want this feature" | After the user agreed: `feature:request --summary "<what and why>" --limit-id <ID from limits>` (`--platform` when it is about one). A platform rule is refused (`409 not_requestable`) and nothing is sent |
 | "What happened to my feature request?" | `feature:list` (status and the team's answer per request), then `feature:get <id>` for the summary and every team reply |
@@ -259,8 +264,9 @@ Product tags put products on a Pin, so people can shop the items in the image. A
 
 | Command | Description |
 |---|---|
-| `accounts:list` | List all connected social media accounts with channel IDs, platforms, content types, and Pinterest boards |
-| `accounts:get <id>` | Get full account details including platform-specific info |
+| `accounts:list` | List all connected social media accounts with channel IDs, platforms, content types, and Pinterest boards. An X account also prints its X statistics setting: `X statistics: Check each post: 5 checks · Count followers: Daily`, with `(paused: credits ran out)` while the organisation's credits are at 0 |
+| `accounts:get <id>` | Get full account details (JSON) including platform-specific info: Pinterest boards, the X subscription and, on an X account, `x_statistics` (`posts`, `followers`, `state`, `paused_reason`; `accounts:list` shows the same setting in the app's words) |
+| `accounts:x-statistics <id>` | Change how often an X account's statistics are read. See "X statistics and credits" below |
 
 ### Analytics
 
@@ -272,6 +278,22 @@ Product tags put products on a Pin, so people can shop the items in the image. A
 | `analytics:overview` | Workspace analytics overview. Flags: `--period 7d\|30d\|90d`, `--start-date YYYY-MM-DD`, `--end-date YYYY-MM-DD`, `--tag "<name or id,...>"` (only the posts with any of these tags) |
 | `analytics:tags` | Compare tags (see Tags): one table, per tag the posts, the measured posts, median impressions, engagement rate, **vs normal** and the channel where it does best, then `(no tag)` for the untagged posts and the user's normal per channel. vs normal compares each post with the median impressions of its OWN channel in the period, so a tag does not win only because its posts went to the channel with the most views (+38% = 38% above the user's normal, -21% = below). `too few posts` = fewer measured posts than `--min-posts` (default 5): do not draw a conclusion from that tag, suggest tagging more posts instead. Rows come comparable first, best first. Published OmniSocials posts only (not posts made outside OmniSocials). Flags: `--start-date`, `--end-date` (default the last 90 days), `--platform` (one connected channel), `--min-posts <1-50>`. `--json` gives `tags[]` (`tag`, `posts`, `measured`, `median_impressions`, `engagement_rate` in percent, `vs_normal` as a fraction, `best_channel`, `enough_posts`), `untagged` and `normals`. Requires `analytics:read` |
 | `analytics:accounts` | Account-level analytics: followers, following, posts, plus the day values the platform reports for the snapshot date (impressions/views, reach, engagement, profile_views, link_clicks, follows_gained, follows_lost; Google Business calls, direction_requests, website_clicks, average_rating, review_count; Pinterest monthly_views). Rows with day values carry `period: "daily"`. Audience objects when available: `demographics` (+ `demographics_unit`) and `online_followers` (UTC hour to followers online; Instagram and TikTok Business, 100+ followers). Flags: `--platform`, `--date YYYY-MM-DD`. **Metric scope varies by platform — read each row's `note`.** LinkedIn profiles keep a lifetime total under `impressions_lifetime` (all content ever, including posts published outside OmniSocials) and carry `period: "lifetime"` when no daily breakdown is served; never compare a lifetime total to a windowed export. A missing key means the platform does not report it (Bluesky and Mastodon have no views; YouTube day values need the YouTube Analytics scope; TikTok day values need the Business authorization). |
+
+### X statistics and credits
+
+X bills every read of a post's statistics, and OmniSocials passes X's price on as credits, with no markup (1 credit = €0.01). Only X works this way: the statistics of every other network stay part of the plan, and publishing an X post without a link costs nothing.
+
+- **Prices**: half a credit a post check (each tweet of a thread counts), 1 credit for a check of a post with a video or GIF (half for the tweet, half for the video), 1 credit a follower count. A post already read today (UTC) is free to read again: X bills a post once a day.
+- **The choices, per X account** (one X account per workspace). Check each post: `full` = **5 checks** (about 5 hours after publishing, day 1, 3 and 7, and day 30 for posts with 100+ views), `light` = **2 checks** (about 5 hours and day 7), `off` = **Off** (numbers read before stay; Update now still works). Count followers: **Daily** (about 30 credits a month), **Weekly** (about 4), **Off**. An account never set uses the default, **5 checks + Daily**. A change applies from the next check, also to posts already published.
+- **Charging date**: reads cost credits from the date in `charging.from` of `credits:get` (the CLI prints "Charging: starts on ..."). Before it, reads are counted but nothing comes off the balance.
+- **When credits run out**, X statistics pause for the whole organisation: posts still go out, no new X reads, Update now answers `402 insufficient_credits`. The checks start again by themselves after a top-up or auto-refill. `accounts:list` prints `(paused: credits ran out)`, and the webhook events `x_statistics.paused` / `x_statistics.resumed` tell a system.
+- Credits are bought in the app (Settings > Organisation > Billing > Credits); the API only reads them.
+
+| Command | Description |
+|---|---|
+| `accounts:x-statistics <account-id>` | Change how often an X account is read. Flags: `--posts full\|light\|off` (5 checks, 2 checks, Off), `--followers daily\|weekly\|off`; one or both, a flag left out keeps its value. X accounts only: the CLI refuses an id that does not end in `_x` before it calls the API. Prints the new setting in the app's words. Changes what the organisation pays, so tell the user what it means and ask first (safety rule 11). Needs the opt-in scope `accounts:write` (the "Credits and X statistics" switch when the key is created) and billing rights (manage_billing) for the key's creator: `403 insufficient_scope` = the key lacks the scope, `403 insufficient_permission` or `forbidden` = the creator has no billing rights (an owner or admin has them); the CLI prints which. `400 not_supported` = not an X account |
+| `analytics:refresh <post-id>` | Update now: check the X numbers of one published post now, outside its schedule (any setting, also `--posts off`). Takes the numeric OmniSocials post id from `posts:list`, not a tweet id. Prints the new numbers per tweet (a thread has one line per part) and the credits used (`0` = free: already read today, UTC, or before the charging date); `analytics:post` shows them too. At most 5 reads of a post a UTC day, scheduled checks included. Errors: `402 insufficient_credits` (nothing read; add credits or turn on auto-refill), `409 refresh_not_available` (the post has no published X tweet), `429 refresh_limit` (5 today; try again after midnight UTC, this is not the rate limit), `502 refresh_failed` (X did not answer, nothing charged; try again in a few minutes). Needs `analytics:read` only |
+| `credits:get` | The organisation's credit balance (whole credits, with the euro value), auto-refill on or off, the credits used this month (UTC) per reason (X statistics, X link posts, X DMs and others), and the X statistics part: the state (active, or paused since when), the charging start date, the prices, this month's reads (post checks, video or GIF reads, follower counts, Update now) and their credits, and a table of every X account with its setting, its tweets of the last 30 days and its estimate a month. Needs the opt-in scope `credits:read` (the same "Credits and X statistics" switch) and billing rights for the key's creator |
 
 ### Inbox (Social Inbox)
 
@@ -295,7 +317,7 @@ Read and reply to DMs, comments, and mentions across connected accounts. Every c
 | Command | Description |
 |---|---|
 | `webhooks:list` | List the webhooks of the workspace and the organisation-wide ones made in the OmniSocials dashboard (`Scope: organisation`, they receive the events of every workspace). A webhook switches off by itself when the person who set it up loses access to the organisation or workspace (`Active: false`, the reason under `Last failure`); `webhooks:update <id> --active true` switches it on again |
-| `webhooks:create` | Create a webhook. Flags: `--url` (required), `--events` (required, comma-separated: `post.scheduled`, `post.published`, `post.failed`, `post.approved`, `post.rejected`). `post.approved` fires when the last step of a post's approval workflow is approved (the post moves to `scheduled`, or `posting` when its time has passed); `post.rejected` fires when an approver rejects a post. Both carry `data.approval` (`status`, `decided_by` = the approver's user id, `reason` = string or null) and an empty `targets` array; the full review is in `posts:approval <id>`. The endpoint must send its whole answer within 15 seconds and at most 1 MB; otherwise the delivery counts as failed (`last_failure.error` in `webhooks:get <id>` says which) and is retried |
+| `webhooks:create` | Create a webhook. Flags: `--url` (required), `--events` (required, comma-separated: `post.scheduled`, `post.published`, `post.failed`, `post.approved`, `post.rejected`, `x_statistics.paused`, `x_statistics.resumed`). `x_statistics.paused` fires when the organisation's X statistics pause because its credits ran out, `x_statistics.resumed` when they run again after credits came in; their `data` is `{ workspace_id, account_id, reason }` (`insufficient_credits` / `credits_added`), one event per workspace with X. `post.approved` fires when the last step of a post's approval workflow is approved (the post moves to `scheduled`, or `posting` when its time has passed); `post.rejected` fires when an approver rejects a post. Both carry `data.approval` (`status`, `decided_by` = the approver's user id, `reason` = string or null) and an empty `targets` array; the full review is in `posts:approval <id>`. The endpoint must send its whole answer within 15 seconds and at most 1 MB; otherwise the delivery counts as failed (`last_failure.error` in `webhooks:get <id>` says which) and is retried |
 | `webhooks:get <id>` | Get webhook details |
 | `webhooks:update <id>` | Update webhook. Flags: `--url`, `--events`, `--active true\|false`. A `--url` on an organisation-wide webhook (`Scope: organisation`), even its current URL, moves it to the key's workspace: from then on it receives only that workspace's events (the output prints the new `Scope`). `--events` and `--active` keep it organisation-wide; to move an organisation-wide webhook to a new URL, make it again in the OmniSocials dashboard. When the webhook has Ads events after the change, `--url`, `--events` or `--active true` needs the `ads:read` scope and Ads access for the key's creator (`403 insufficient_scope` / `insufficient_permission`, nothing changed) |
 | `webhooks:delete <id>` | Delete a webhook |
@@ -740,6 +762,22 @@ Relay "too few posts" as "not enough tagged posts to tell yet", not as a result.
 ./scripts/omnisocials.js analytics:posts 1024,1025,1026
 ```
 
+### X statistics: what they cost, check less often, Update now
+```
+./scripts/omnisocials.js credits:get
+# Balance: 412 credits (€4.12) ... X statistics: State: active
+# Charging: starts on 12 November 2026; until then reads are counted, nothing comes off the balance
+# Account              Check each post  Count followers  Tweets (30 days)  Credits a month
+# @yourbrand (1234_x)  5 checks         Daily                          20             72.9
+# Tell the user what the choices mean. Only after they agree:
+./scripts/omnisocials.js accounts:x-statistics 1234_x --posts light --followers weekly
+# X statistics changed: @yourbrand (1234_x)
+# Check each post: 2 checks
+# Count followers: Weekly
+# Fresh numbers for one X post now (half a credit a tweet; free when it was read today, UTC):
+./scripts/omnisocials.js analytics:refresh 9123
+```
+
 ### Triage the social inbox and reply
 ```
 ./scripts/omnisocials.js inbox:list --unread --platform instagram
@@ -881,6 +919,13 @@ Prints `Rejected by: Jordan on step 2`, `Reason: ...`, every step with its appro
 | `unknown_limit` | `--limit-id` is not an entry of `limits` | Run `limits` for the ids, or leave out `--limit-id` |
 | `invalid_summary` / `invalid_title` | The summary is not 10 to 1000 characters, or the title is over 120 | Write a summary of one or two sentences |
 | `too_many_requests` | More than 10 feature requests in an hour | Wait. Do not send it again right away |
+| `insufficient_scope` on `accounts:x-statistics` / `credits:get` | The key lacks the opt-in `accounts:write` / `credits:read` scope | The user creates a new key with "Credits and X statistics" switched on (Settings > API); the person who creates it needs billing rights |
+| `insufficient_permission` / `forbidden` on `accounts:x-statistics` / `credits:get` | The person who created the key has no billing rights (manage_billing) | An owner or admin makes the change, or creates the key |
+| `not_supported` | `accounts:x-statistics` on an account that is not X | Use the X account id (ends in `_x`) from `accounts:list` |
+| `insufficient_credits` | `analytics:refresh`: the credit balance does not cover the read. Nothing was read | The user adds credits (Settings > Organisation > Billing > Credits) or turns on auto-refill |
+| `refresh_not_available` | `analytics:refresh` on a post with no published X tweet | Update now is for X posts only; `analytics:post <id>` shows the other networks |
+| `refresh_limit` | `analytics:refresh`: the post was read 5 times today (UTC, scheduled checks included), or the organisation used its 100 Update now checks today | Try again after midnight UTC. Not the rate limit |
+| `refresh_failed` | `analytics:refresh`: X did not answer. Nothing was charged | Try again in a few minutes |
 
 ### Rate Limits
 
@@ -898,6 +943,7 @@ The API allows 100 requests per minute per API key. Response headers include:
 - **Pinterest product tags**: Run `pinterest:products` to get product Pin IDs for `--pinterest-product-tags` (max 24, own product Pins only)
 - **Comment to DM**: an automation made with a post (`--dm-keywords` + `--dm-message`) starts once the post is live on its channel (Instagram, or Facebook with `--dm-platforms`); `automations:events <id>` shows every comment it answered or skipped. X automations (`automations:create --platform x`) answer DMs only, never a post
 - **Tags**: reuse the names from `tags:list`; tag older posts with `tags:apply` before you compare them with `analytics:tags`
+- **X statistics cost credits**: `credits:get` shows the estimate per X account; change it with `accounts:x-statistics` only after the user agreed, and run `analytics:refresh` only when the user asks for fresh X numbers
 - **Not possible?** Run `limits --platform <id>` before you tell the user something cannot be done; offer `feature:request` only when the user still wants it, and send it after they agree
 - **Scheduling**: Use ISO 8601 format for dates (e.g., `2026-04-10T14:00:00Z`)
 - **Media upload**: Supports JPEG, PNG, GIF, WebP images, MP4, MOV, AVI videos and PDFs (100 MB per upload; up to 1 GB from a public URL with `media:upload`)
