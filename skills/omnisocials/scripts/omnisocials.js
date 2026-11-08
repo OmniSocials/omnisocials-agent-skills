@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.40.1";
+const VERSION = "1.40.2";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -3809,6 +3809,13 @@ async function cmdWebhooksGet(config, flags, positional) {
   handleResult(result, flags);
 }
 
+// PATCH /webhooks/{id} (2026-11-08). A --url on an organisation-wide webhook
+// (made in the dashboard, workspace_id null), even its current URL, moves it to
+// this key's workspace: from then on it gets only that workspace's events, and
+// the answer carries the new workspace_id. --events and --active keep it
+// organisation-wide. When the webhook has Ads events after the change, --url,
+// --events or --active true needs ads:read and Ads access for the key's
+// creator (403 insufficient_scope / insufficient_permission, nothing changed).
 async function cmdWebhooksUpdate(config, flags, positional) {
   const id = positional[0];
   if (!id) {
@@ -3828,6 +3835,8 @@ async function cmdWebhooksUpdate(config, flags, positional) {
   handleResult(result, flags, (data) => {
     console.log("Webhook updated successfully!");
     console.log(`ID: ${data.id}`);
+    if (data.workspace_id === null) console.log("Scope: organisation (every workspace)");
+    else if (data.workspace_id !== undefined) console.log(`Scope: workspace ${data.workspace_id}`);
   });
 }
 
@@ -4250,7 +4259,7 @@ WEBHOOKS
   webhooks:list                  List webhooks (the workspace's and the organisation-wide ones)
   webhooks:create                Create webhook [--url --events] (events: post.scheduled, post.published, post.failed, post.approved, post.rejected)
   webhooks:get <id>              Get webhook details
-  webhooks:update <id>           Update webhook [--url --events --active]
+  webhooks:update <id>           Update webhook [--url --events --active] (--url moves an organisation-wide webhook to this workspace)
   webhooks:delete <id>           Delete a webhook
   webhooks:rotate-secret <id>    Rotate webhook secret
 

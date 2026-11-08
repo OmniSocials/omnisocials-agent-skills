@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.40.2 (2026-11-08)
+
+### Changed
+- **`webhooks:update` prints the webhook's scope, and its help names the rule for organisation-wide webhooks.** A `--url` on an organisation-wide webhook (made in the OmniSocials dashboard), even its current URL, moves it to the key's workspace: from then on it receives only that workspace's events. `--events` and `--active` keep it organisation-wide. When the webhook has Ads events after the change, `--url`, `--events` or `--active true` needs the `ads:read` scope and Ads access (`403 insufficient_scope` / `insufficient_permission`, nothing changed).
+- **New skip reason `plan_inactive` in `automations:events` (API behaviour, no CLI change).** A comment or DM that matches an automation, or an answer waiting in the queue, is skipped when the organisation has no active plan or trial: nothing is sent. A Follow first tap gets no answer then; the person stays `waiting`.
+- **Webhook deliveries (API behaviour, no CLI change).** The endpoint must send its whole answer within 15 seconds and at most 1 MB; otherwise the delivery counts as failed and is retried.
+
 ## 1.40.1 (2026-11-08)
 
 ### Changed
