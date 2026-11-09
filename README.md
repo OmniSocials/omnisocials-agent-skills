@@ -104,6 +104,12 @@ On first use, sign in to OmniSocials and approve the workspaces the agent can ac
 
 The MCP connection uses OAuth. No API key is needed for it.
 
+## Cursor
+
+Install this repository as a Cursor plugin. Open **Customize**, import `OmniSocials/omnisocials-agent-skills` as a marketplace, and install **omnisocials**. To try it locally, copy the repo to `~/.cursor/plugins/local/omnisocials` and reload Cursor. Cursor loads the skill from `skills/` and the hosted MCP server from `mcp.json`.
+
+The MCP server signs in with OAuth (scopes `social:read` and `social:write`). No API key is stored for it. The CLI still uses `OMNISOCIALS_API_KEY`.
+
 ## Network endpoints and credentials
 
 For transparency and security review, this plugin only calls OmniSocials services:
