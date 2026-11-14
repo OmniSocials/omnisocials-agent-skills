@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.41.0";
+const VERSION = "1.41.1";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -463,9 +463,10 @@ function assemblePlatformOptions(flags) {
 // x_dms_off), every answer ends with "Reply STOP to stop automatic
 // messages." and a person who replies STOP gets no automatic DM again. Meta
 // allows one private reply per comment within 7 days, OmniSocials sends at
-// most 180 DMs an hour per account on Instagram and Facebook, and on X 15 per
-// 15 minutes and 450 a day; an answer over the cap (or one X asked to wait
-// for) waits in a queue (outcome queued) for up to an hour. The stop list
+// most 700 DMs an hour per account on Instagram and Facebook, and on X 15 per
+// 15 minutes and 450 a day; an answer over the cap (or one the platform asked
+// to wait for) waits in a queue (outcome queued): for up to about a day on
+// Instagram and Facebook, for up to an hour on X. The stop list
 // belongs to the X account: it holds after the automation is deleted, for
 // later automations and in every workspace with that account. The scopes are
 // opt-in on the key: without them every call answers 403 insufficient_scope.
@@ -1460,7 +1461,7 @@ function formatAutomationDetail(a) {
 // What a queued or opted_out row means when the API sent no reason_label
 // (the API labels both since 2026-10-25; older answers had none).
 const AUTOMATION_OUTCOME_NOTES = {
-  queued: "waits for a free send slot, goes out within the hour",
+  queued: "waits for a free send slot, goes out as soon as there is room",
   opted_out: "replied STOP: no automatic DMs from this account again",
 };
 

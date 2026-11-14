@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.41.1 (2026-11-14)
+
+### Changed
+- **Comment-to-DM automations on Instagram and Facebook send up to 700 DMs an hour per account (API behaviour; it was 180).** Meta allows 750 private replies an hour for each account, and OmniSocials stays just under that number. An answer over the cap still waits as `queued` and goes out as soon as there is room, now for up to about a day (it was one hour); only after that is it skipped as `rate_limited`. An answer that Instagram or Facebook refuses with its own rate limit also waits and goes out later, where it failed before. X does not change: 15 per 15 minutes and 450 a day, and a queue of one hour.
+- **SKILL.md shows the new numbers.** The note for a `queued` row in `automations:events` now reads "goes out as soon as there is room" when the API sent no label. No command, flag or output format changed.
+
 ## 1.41.0 (2026-11-12)
 
 ### Added

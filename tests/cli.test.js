@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.41.0");
+    expect(stdout).toContain("OmniSocials CLI v1.41.1");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -3618,7 +3618,7 @@ describe("Comment-to-DM automations (mock API)", () => {
         kind: "dm",
         outcome: "queued",
         reason: "rate_limited",
-        reason_label: "Waiting for room under the send limit. It goes out within the hour",
+        reason_label: "Waiting for room under the send limit. It goes out as soon as there is room",
         person: { id: "44", username: "jane" },
         trigger_id: "dm_1",
         trigger_text: null,
@@ -3678,7 +3678,7 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(calls[1].query.get("outcome")).toBe("queued");
         expect(stdout).toContain("Counts: 1 queued, 1 opted_out, 1 skipped");
         // The API's reason_label wins; a row without one gets the CLI's note.
-        expect(stdout).toContain("2026-10-25T10:00:00.000Z  DM  queued (Waiting for room under the send limit. It goes out within the hour)  @jane");
+        expect(stdout).toContain("2026-10-25T10:00:00.000Z  DM  queued (Waiting for room under the send limit. It goes out as soon as there is room)  @jane");
         expect(stdout).toContain("2026-10-25T10:01:00.000Z  DM  opted_out (replied STOP: no automatic DMs from this account again)  @bob");
         expect(stdout).toContain("skipped (Credits ran out before the answer. Top up, then answer in the Social Inbox)  @amy");
       }
