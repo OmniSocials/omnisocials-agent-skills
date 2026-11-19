@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.42.0";
+const VERSION = "1.43.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -1926,6 +1926,20 @@ function formatMessage(msg, index) {
   // account liked it (flip with inbox:like). null everywhere else.
   if (msg.liked === true) meta.push("liked");
   lines.push(`    ${meta.join("  ·  ")}`);
+  // Every file of the message (`attachments`: a Threads photo, video, GIF or
+  // carousel reply, a DM attachment), each on its own line; a video with its
+  // still. Older APIs sent only `attachment`.
+  const files = Array.isArray(msg.attachments) && msg.attachments.length
+    ? msg.attachments
+    : msg.attachment && msg.attachment.url
+      ? [msg.attachment]
+      : [];
+  files.forEach((file, i) => {
+    if (!file || !file.url) return;
+    const count = files.length > 1 ? ` ${i + 1}/${files.length}` : "";
+    const still = file.thumbnail_url ? `  (still: ${file.thumbnail_url})` : "";
+    lines.push(`    ${file.type || "file"}${count}: ${file.url}${still}`);
+  });
   if (msg.permalink) lines.push(`    ${msg.permalink}`);
   return lines.join("\n");
 }

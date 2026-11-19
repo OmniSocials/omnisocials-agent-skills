@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.43.0 (2026-11-18)
+
+### Added
+- **`inbox:messages`, `inbox:next` and `inbox:reply --next` print every file of a message.** One line per file under the message: `image: <url>`, `video 2/3: <url>  (still: <url>)`, from the API's new `attachments` list (older answers with only `attachment` print that one). Threads replies and mentions now bring their photos, videos, GIFs and carousel items (API behaviour since 2026-11-18, copied to OmniSocials' CDN); a reply with only media reads "Sent an image", "Sent a GIF" or "Sent 3 images" instead of "(no text)". The link to each Threads reply was already printed.
+- **SKILL.md** says that the files of a message come with it, so an agent can look at a photo before it drafts the reply.
+
 ## 1.42.0 (2026-11-16)
 
 ### Added

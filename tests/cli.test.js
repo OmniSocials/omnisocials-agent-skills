@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.42.0");
+    expect(stdout).toContain("OmniSocials CLI v1.43.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -1637,6 +1637,44 @@ describe("Inbox work queue (mock API)", () => {
         expect(stdout).toContain("URL: https://www.instagram.com/p/abc123/");
         expect(stdout).toContain("id: 41");
         expect(stdout).toContain("id: 42");
+      }
+    );
+  });
+
+  it("inbox:messages prints every file of a message, a video with its still", async () => {
+    const CDN = "https://cdn.omnisocials.com/file/library-omnisocials/social-inbox/7/inbound";
+    await withMockServer(
+      () => ({
+        json: {
+          data: [
+            msg({
+              platform: "threads",
+              text: "Sent 2 images and videos",
+              permalink: "https://www.threads.com/@anna/post/R1",
+              attachment: { url: `${CDN}/a.jpg`, type: "image" },
+              attachments: [
+                { url: `${CDN}/a.jpg`, type: "image", thumbnail_url: null },
+                { url: `${CDN}/b.mp4`, type: "video", thumbnail_url: `${CDN}/b.jpg` },
+              ],
+            }),
+            msg({ id: 43, platform: "instagram", type: "dm", text: "Sent an image", attachment: { url: `${CDN}/dm.jpg`, type: "image" } }),
+          ],
+        },
+      }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run([
+          "inbox:messages",
+          "threads_comment_1",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain(`image 1/2: ${CDN}/a.jpg`);
+        expect(stdout).toContain(`video 2/2: ${CDN}/b.mp4  (still: ${CDN}/b.jpg)`);
+        expect(stdout).toContain("https://www.threads.com/@anna/post/R1");
+        expect(stdout).toContain(`image: ${CDN}/dm.jpg`);
       }
     );
   });
