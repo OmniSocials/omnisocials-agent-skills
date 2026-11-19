@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.41.1";
+const VERSION = "1.42.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -478,7 +478,9 @@ const AUTOMATION_PLATFORMS = ["instagram", "facebook", "x"];
 const POST_DM_PLATFORMS = ["instagram", "facebook"];
 const AUTOMATION_PLATFORM_WORDS = { instagram: "Instagram", facebook: "Facebook", x: "X" };
 const AUTOMATION_STATUSES = ["active", "paused", "completed"];
-const AUTOMATION_EVENT_OUTCOMES = ["sent", "skipped", "failed", "pending", "queued", "opted_out"];
+// waiting = the first DM had a button and the person has not tapped it yet
+// (the tap step of a follow-up, or Follow first set in the dashboard).
+const AUTOMATION_EVENT_OUTCOMES = ["sent", "skipped", "failed", "pending", "queued", "opted_out", "waiting"];
 const AUTOMATIONS_SCOPE_HINT =
   "Enable Automations on the API key (Settings > API: adds automations:read and automations:write).";
 
@@ -546,13 +548,254 @@ function parseStopAt(flag, value) {
   return v;
 }
 
+// Follow first (`actions.follow_gate`, Instagram only): the DM waits until
+// the person follows the account. The first message goes out with one button;
+// a tap makes OmniSocials ask Instagram whether the person follows: yes = the
+// DM with the link, not yet = the not-following message with its button,
+// which checks again on the next tap. Meta lets an app read the follow only
+// after the person messaged or tapped, so a private reply alone cannot
+// check. On a DM or story reply trigger the check runs at once. Facebook and
+// X do not tell apps who follows an account (400 follow_gate_instagram_only).
+// Texts and buttons left out read as OmniSocials' defaults; Meta's button
+// template holds 20 characters per button.
+const FOLLOW_GATE_PLATFORMS = ["instagram"];
+const FOLLOW_GATE_TEXT_MAX = 640;
+const FOLLOW_GATE_BUTTON_MAX = 20;
+
+// on / off for --follow-first and --dm-follow-first; a bare flag = on.
+function parseOnOff(flag, value) {
+  if (value === true) return true;
+  const v = String(value).trim().toLowerCase();
+  if (["on", "true", "yes"].includes(v)) return true;
+  if (["off", "false", "no"].includes(v)) return false;
+  return exitWithError(`${flag} must be on or off (got "${value}")`);
+}
+
+// The texts of the follow gate from four flags ({ text: flag, button: flag }
+// per part), checked against Meta's limits. Returns only the parts given.
+function followGateParts(flags, names) {
+  const parts = {};
+  for (const [key, { text, button }] of Object.entries(names)) {
+    const part = {};
+    if (flags[text] !== undefined) {
+      part.text = requireValue(`--${text}`, flags[text]);
+      if (part.text.length > FOLLOW_GATE_TEXT_MAX) {
+        exitWithError(`--${text} can hold ${FOLLOW_GATE_TEXT_MAX} characters (got ${part.text.length})`);
+      }
+    }
+    if (flags[button] !== undefined) {
+      part.button = requireValue(`--${button}`, flags[button]);
+      if (part.button.length > FOLLOW_GATE_BUTTON_MAX) {
+        exitWithError(
+          `--${button} can hold ${FOLLOW_GATE_BUTTON_MAX} characters, Meta's limit for a button (got ${part.button.length})`
+        );
+      }
+    }
+    if (Object.keys(part).length) parts[key] = part;
+  }
+  return parts;
+}
+
+// `actions.follow_gate` from the switch flag and the four text flags, or
+// undefined when none was given. `partial` (automations:update): texts alone
+// keep the stored switch, the API merges them into the stored gate. Without
+// `partial` (create, and a post's automation, which is always sent whole) a
+// text needs the switch, else it would be stored with the gate off.
+function buildFollowGate(flags, { switchFlag, names, partial = false }) {
+  const textFlags = Object.values(names).flatMap((n) => [n.text, n.button]);
+  const givenTexts = textFlags.filter((f) => flags[f] !== undefined);
+  if (flags[switchFlag] === undefined && !givenTexts.length) return undefined;
+
+  const gate = {};
+  if (flags[switchFlag] !== undefined) gate.enabled = parseOnOff(`--${switchFlag}`, flags[switchFlag]);
+  if (!partial && gate.enabled !== true && givenTexts.length) {
+    exitWithError(
+      `--${givenTexts[0]} is a text of Follow first: add --${switchFlag}${gate.enabled === false ? " on" : ""} to ask people to follow you first`
+    );
+  }
+  Object.assign(gate, followGateParts(flags, names));
+  return gate;
+}
+
+// The flags of Follow first on automations:create / automations:update
+// (switch: --follow-first on|off) and on the post commands (switch:
+// --dm-follow-first).
+const AUTOMATION_FOLLOW_FLAGS = {
+  first_message: { text: "follow-text", button: "follow-button" },
+  not_following: { text: "not-following-text", button: "not-following-button" },
+};
+const POST_FOLLOW_FLAGS = {
+  first_message: { text: "dm-follow-text", button: "dm-follow-button" },
+  not_following: { text: "dm-not-following-text", button: "dm-not-following-button" },
+};
+
+// The follow-up (`actions.follow_up`, Instagram and Facebook): one more
+// automatic DM `delay_hours` (1 to 23, default 23) after the answer went
+// out. Meta allows an automatic message only within 24 hours after the
+// person's last DM, button tap or quick reply; a comment and the private
+// reply do not open that window. So on an Instagram comment answer the first
+// DM becomes a tap step (a short text with one button, `tap`); the tap sends
+// the --dm text and opens the window. With Follow first on, its own button is
+// the tap. A DM or story reply trigger opened the window itself. A Facebook
+// comment answer has no button: only people who answer it in Messenger get
+// the follow-up. X allows an automatic DM only as the answer to a DM, so an X
+// automation has none (400 follow_up_not_supported). Limits are the API's:
+// the text 1000 characters (640 with a button, Meta's button template), a
+// button title 20, its URL 2000, the tap text 640 and the tap button 20.
+const FOLLOW_UP_TEXT_MAX = 1000;
+const FOLLOW_UP_TEXT_WITH_BUTTON_MAX = 640;
+const FOLLOW_UP_BUTTON_MAX = 20;
+const FOLLOW_UP_URL_MAX = 2000;
+const FOLLOW_UP_MIN_HOURS = 1;
+const FOLLOW_UP_MAX_HOURS = 23;
+const FOLLOW_UP_FLAGS = [
+  "follow-up-text",
+  "follow-up-delay",
+  "follow-up-button-title",
+  "follow-up-button-url",
+  "no-follow-up-button",
+  "follow-up-tap-text",
+  "follow-up-tap-button",
+  "no-follow-up",
+];
+
+// A text flag with a length cap (Meta's limits, checked before the call).
+function cappedText(flag, value, max, what = "") {
+  const v = requireValue(flag, value);
+  if (v.length > max) exitWithError(`${flag} can hold ${max} characters${what} (got ${v.length})`);
+  return v;
+}
+
+// --follow-up-delay 6: whole hours from 1 to 23 (Meta's window is 24 hours
+// after the person's last tap or message, and the send keeps a margin).
+function parseFollowUpDelay(value) {
+  const n = value === true ? NaN : Number(value);
+  if (!Number.isInteger(n) || n < FOLLOW_UP_MIN_HOURS || n > FOLLOW_UP_MAX_HOURS) {
+    exitWithError(
+      `--follow-up-delay must be a whole number of hours from ${FOLLOW_UP_MIN_HOURS} to ${FOLLOW_UP_MAX_HOURS}${value === true ? "" : ` (got "${value}")`}: Meta allows an automatic message only within 24 hours after the person's last tap or message`
+    );
+  }
+  return n;
+}
+
+// --follow-up-button-url: a web address that starts with https:// or http://.
+function parseFollowUpUrl(value) {
+  const v = cappedText("--follow-up-button-url", value, FOLLOW_UP_URL_MAX);
+  let ok = false;
+  try {
+    const url = new URL(v);
+    ok = url.protocol === "https:" || url.protocol === "http:";
+  } catch {
+    ok = false;
+  }
+  if (!ok) exitWithError(`--follow-up-button-url must be a web address that starts with https:// or http:// (got "${v}")`);
+  return v;
+}
+
+// `actions.follow_up` from the --follow-up-* flags, or undefined when none
+// was given (the key then stays out of the body, and an update keeps the
+// stored follow-up). `platform` is the channel the flags name (undefined on
+// update without --platform: the API knows the stored one). On create a
+// follow-up needs its text (--follow-up-text switches it on); on update
+// (`partial`) the delay, button and tap flags alone send just those keys and
+// the API merges them into the stored follow-up, keeping its switch.
+// --no-follow-up sends { enabled: false }: off, the texts stay.
+function buildFollowUp(flags, { platform, partial = false }) {
+  const given = FOLLOW_UP_FLAGS.filter((f) => flags[f] !== undefined);
+  if (!given.length) return undefined;
+
+  // The API would answer 400 follow_up_not_supported, but the fix is a flag.
+  if (platform === "x") {
+    exitWithError(
+      `X has no follow-up: X allows an automatic DM only as the answer to a DM. Drop ${given.map((f) => `--${f}`).join(", ")}.`
+    );
+  }
+  const off = flags["no-follow-up"] !== undefined;
+  if (off && flags["follow-up-text"] !== undefined) {
+    exitWithError("--no-follow-up switches the follow-up off and cannot go with --follow-up-text.");
+  }
+  if (!partial && !off && flags["follow-up-text"] === undefined) {
+    exitWithError(
+      `--${given[0]} is part of the follow-up: the follow-up needs --follow-up-text "<text>" (the DM that goes out after the answer).`
+    );
+  }
+
+  const followUp = {};
+  if (off) followUp.enabled = false;
+  if (flags["follow-up-text"] !== undefined) {
+    followUp.enabled = true;
+    followUp.text = cappedText("--follow-up-text", flags["follow-up-text"], FOLLOW_UP_TEXT_MAX);
+  }
+  if (flags["follow-up-delay"] !== undefined) followUp.delay_hours = parseFollowUpDelay(flags["follow-up-delay"]);
+
+  // The button: title and url together (a button REPLACES the stored one),
+  // or --no-follow-up-button, which removes it.
+  const title = flags["follow-up-button-title"];
+  const url = flags["follow-up-button-url"];
+  if (flags["no-follow-up-button"] !== undefined && (title !== undefined || url !== undefined)) {
+    exitWithError(
+      `--no-follow-up-button removes the follow-up's button and cannot go with --${title !== undefined ? "follow-up-button-title" : "follow-up-button-url"}.`
+    );
+  }
+  if ((title === undefined) !== (url === undefined)) {
+    exitWithError(
+      "The follow-up's button needs both --follow-up-button-title \"<label>\" and --follow-up-button-url <https://...>."
+    );
+  }
+  if (title !== undefined) {
+    followUp.button = {
+      title: cappedText("--follow-up-button-title", title, FOLLOW_UP_BUTTON_MAX, ", Meta's limit for a button"),
+      url: parseFollowUpUrl(url),
+    };
+    if (followUp.text && followUp.text.length > FOLLOW_UP_TEXT_WITH_BUTTON_MAX) {
+      exitWithError(
+        `With a button the follow-up can hold ${FOLLOW_UP_TEXT_WITH_BUTTON_MAX} characters, Meta's limit for a message with a button (--follow-up-text has ${followUp.text.length}).`
+      );
+    }
+  }
+  if (flags["no-follow-up-button"] !== undefined) followUp.button = null;
+
+  // The tap step: the first DM of an Instagram comment answer.
+  const tapFlags = ["follow-up-tap-text", "follow-up-tap-button"].filter((f) => flags[f] !== undefined);
+  if (tapFlags.length) {
+    if (platform && platform !== "instagram") {
+      exitWithError(
+        `The tap step is Instagram's: a ${AUTOMATION_PLATFORM_WORDS[platform] || platform} comment answer has no button. Drop ${tapFlags.map((f) => `--${f}`).join(", ")}.`
+      );
+    }
+    followUp.tap = {};
+    if (flags["follow-up-tap-text"] !== undefined) {
+      followUp.tap.text = cappedText("--follow-up-tap-text", flags["follow-up-tap-text"], FOLLOW_UP_TEXT_WITH_BUTTON_MAX);
+    }
+    if (flags["follow-up-tap-button"] !== undefined) {
+      followUp.tap.button = cappedText(
+        "--follow-up-tap-button",
+        flags["follow-up-tap-button"],
+        FOLLOW_UP_BUTTON_MAX,
+        ", Meta's limit for a button"
+      );
+    }
+  }
+  return followUp;
+}
+
 // The body of automations:create (every section, the API's defaults spelled
 // out) and of automations:update (`partial`: only the sections whose flags
 // were given, so the rest stays as stored). Shape:
 //   { platform, name, post_id | instagram_media_id | facebook_post_id,
 //     trigger: { kinds, scope, keywords, match },
-//     actions: { dm: { text }, public_reply: { enabled, variations } },
+//     actions: { dm: { text }, public_reply: { enabled, variations },
+//                follow_gate: { enabled, first_message: { text, button },
+//                               not_following: { text, button } },
+//                follow_up: { enabled, text, delay_hours,
+//                             button: { title, url } | null,
+//                             tap: { text, button } } },
 //     limits: { max_sends, stop_at }, status }
+// `follow_gate` is sent only when a --follow-first / --follow-text /
+// --follow-button / --not-following-* flag was given; on update it merges
+// into the stored gate (`{ enabled: false }` keeps the texts).
+// `follow_up` is sent only when a --follow-up-* flag was given (see
+// buildFollowUp); on update it holds only the keys given.
 // `platform` is instagram (the API's default), facebook (a Facebook Page) or
 // x (the X account, DMs only); --facebook-post-id implies facebook. `scope`
 // only means something for the comment trigger (post = the post named here,
@@ -652,12 +895,23 @@ function buildAutomationBody(flags, { partial = false } = {}) {
   if (!partial && flags.dm === undefined) {
     exitWithError('--dm "<text>" is required: the DM the automation sends (max 1000 chars)');
   }
-  if (flags.dm !== undefined || flags.reply !== undefined) {
+  const followGate = buildFollowGate(flags, { switchFlag: "follow-first", names: AUTOMATION_FOLLOW_FLAGS, partial });
+  // The API would answer 400 follow_gate_instagram_only, but the fix is a
+  // flag, so say so first. On update the stored platform is not known here.
+  if (followGate && followGate.enabled === true && platform && !FOLLOW_GATE_PLATFORMS.includes(platform)) {
+    exitWithError(
+      `Follow first works on Instagram only: ${AUTOMATION_PLATFORM_WORDS[platform]} does not tell apps who follows an account. Drop --follow-first.`
+    );
+  }
+  const followUp = buildFollowUp(flags, { platform, partial });
+  if (flags.dm !== undefined || flags.reply !== undefined || followGate || followUp) {
     const actions = {};
     if (flags.dm !== undefined) actions.dm = { text: requireValue("--dm", flags.dm) };
     if (flags.reply !== undefined) {
       actions.public_reply = { enabled: true, variations: splitReplyVariations("--reply", flags.reply) };
     }
+    if (followGate) actions.follow_gate = followGate;
+    if (followUp) actions.follow_up = followUp;
     body.actions = actions;
   }
 
@@ -690,6 +944,11 @@ function buildAutomationBody(flags, { partial = false } = {}) {
 // body without post, scope, kinds, name and status, plus `platforms`
 // (--dm-platforms instagram,facebook = one automation per channel; without
 // it the API picks Instagram when the post goes there, else Facebook).
+// --dm-follow-first (+ --dm-follow-text / --dm-follow-button /
+// --dm-not-following-text / --dm-not-following-button) adds Follow first
+// (`actions.follow_gate`); on a setup for both channels only the Instagram
+// automation asks, the Facebook one sends at once. The setup is sent whole,
+// so posts:update without --dm-follow-first switches Follow first off.
 // posts:update --no-dm sends null, which removes it.
 // Returns undefined when no flag was given, so the key stays out of the body.
 const POST_DM_FLAGS = [
@@ -700,6 +959,11 @@ const POST_DM_FLAGS = [
   "dm-max-sends",
   "dm-stop-at",
   "dm-platforms",
+  "dm-follow-first",
+  "dm-follow-text",
+  "dm-follow-button",
+  "dm-not-following-text",
+  "dm-not-following-button",
 ];
 function buildPostCommentDm(flags) {
   const given = POST_DM_FLAGS.filter((f) => flags[f] !== undefined);
@@ -727,6 +991,8 @@ function buildPostCommentDm(flags) {
   if (flags["dm-reply"] !== undefined) {
     actions.public_reply = { enabled: true, variations: splitReplyVariations("--dm-reply", flags["dm-reply"]) };
   }
+  const followGate = buildFollowGate(flags, { switchFlag: "dm-follow-first", names: POST_FOLLOW_FLAGS });
+  if (followGate) actions.follow_gate = followGate;
   const automation = { trigger, actions };
   if (flags["dm-max-sends"] !== undefined || flags["dm-stop-at"] !== undefined) {
     automation.limits = {};
@@ -737,6 +1003,11 @@ function buildPostCommentDm(flags) {
   }
   if (flags["dm-platforms"] !== undefined) {
     automation.platforms = pickSomeOf("--dm-platforms", flags["dm-platforms"], POST_DM_PLATFORMS);
+    if (followGate && followGate.enabled === true && !automation.platforms.some((p) => FOLLOW_GATE_PLATFORMS.includes(p))) {
+      exitWithError(
+        "Follow first works on Instagram only: Facebook does not tell apps who follows an account. Add instagram to --dm-platforms or drop --dm-follow-first."
+      );
+    }
   }
   return automation;
 }
@@ -1411,7 +1682,54 @@ function describeAutomationPlatform(a) {
 function describeAutomationStats(stats) {
   const s = stats || {};
   const n = (v) => (typeof v === "number" ? v : 0);
-  return `${n(s.sent)} sent / ${n(s.matched)} matched / ${n(s.skipped)} skipped / ${n(s.failed)} failed`;
+  // `followed` (Follow first): people who followed after the follow ask, then got the link.
+  const followed = n(s.followed) > 0 ? ` / ${n(s.followed)} followed first` : "";
+  // The follow-up's numbers only when there are any.
+  const followUps = (count, what) => (n(count) > 0 ? ` / ${n(count)} follow-up${n(count) === 1 ? "" : "s"} ${what}` : "");
+  return (
+    `${n(s.sent)} sent / ${n(s.matched)} matched / ${n(s.skipped)} skipped / ${n(s.failed)} failed${followed}` +
+    followUps(s.follow_ups_sent, "sent") +
+    followUps(s.follow_ups_skipped, "skipped")
+  );
+}
+
+// The Follow first line of automations:get / create / update: off, or on with
+// the two messages and their buttons. null on Facebook and X (no follow
+// status there), so no line.
+function describeFollowGate(gate) {
+  if (!gate || typeof gate !== "object") return null;
+  if (!gate.enabled) return "off";
+  const part = (p) => {
+    const x = p || {};
+    return `"${x.text || ""}"${x.button ? ` [${x.button}]` : ""}`;
+  };
+  return `on: first ${part(gate.first_message)}; not following yet ${part(gate.not_following)}`;
+}
+
+// The Follow-up line of automations:get / create / update: off, or on with
+// the delay, the text, the button and (Instagram comment answers) the tap
+// step. null on X (no follow-up there), so no line.
+function describeFollowUp(a) {
+  const f = (a.actions || {}).follow_up;
+  if (!f || typeof f !== "object") return null;
+  if (!f.enabled) return "off";
+  const hours = Number(f.delay_hours) || 23;
+  const parts = [`on: after ${hours} h "${truncate(f.text, 60)}"`];
+  if (f.button && f.button.title) parts.push(`button ${f.button.title} -> ${f.button.url}`);
+  const kinds = Array.isArray((a.trigger || {}).kinds) ? a.trigger.kinds : ["comment"];
+  if (kinds.includes("comment")) {
+    if (a.platform === "facebook") {
+      parts.push("a comment answer has no button: only people who answer it in Messenger get it");
+    } else if (f.tap && typeof f.tap === "object") {
+      const gate = (a.actions || {}).follow_gate;
+      parts.push(
+        gate && gate.enabled
+          ? "tap step: the Follow first button"
+          : `tap step "${truncate(f.tap.text, 60)}"${f.tap.button ? ` [${f.tap.button}]` : ""}`
+      );
+    }
+  }
+  return parts.join("; ");
 }
 
 // One automation in automations:list.
@@ -1444,6 +1762,10 @@ function formatAutomationDetail(a) {
   lines.push(
     `Public reply: ${reply.enabled && variations.length ? variations.map((v) => `"${v}"`).join(" | ") : "off"}`
   );
+  const followGate = describeFollowGate(actions.follow_gate);
+  if (followGate) lines.push(`Follow first: ${followGate}`);
+  const followUp = describeFollowUp(a);
+  if (followUp) lines.push(`Follow-up: ${followUp}`);
   const limits = a.limits || {};
   const limitWords = [];
   if (limits.max_sends) limitWords.push(`max ${limits.max_sends} DMs`);
@@ -1463,19 +1785,62 @@ function formatAutomationDetail(a) {
 const AUTOMATION_OUTCOME_NOTES = {
   queued: "waits for a free send slot, goes out as soon as there is room",
   opted_out: "replied STOP: no automatic DMs from this account again",
+  waiting: "waiting for follow: asked to follow first, the link goes out after the follow",
 };
+// A waiting row of the follow-up's tap step (follow_gate.mode "tap"): the
+// first DM had a button, the tap brings the link and opens Meta's window.
+const WAITING_FOR_TAP_NOTE = "waiting for the tap: the first DM has a button, the link goes out when the person taps it";
+
+// Where a person is in Follow first, in the dashboard's words: the event's
+// `follow_gate` ({ mode, state, taps, checked, after_ask }), or null. The
+// tap step of a follow-up (mode "tap") checks no follow: its waiting row has
+// its own note, and its sent row says the link went after the tap.
+function describeFollowState(f) {
+  if (!f || typeof f !== "object") return null;
+  if (f.mode === "tap") return f.state === "done" ? "link sent after the tap" : null;
+  if (f.state === "waiting") {
+    const taps = Number(f.taps) || 0;
+    return taps > 0 ? `asked to follow, tapped ${taps} ${taps === 1 ? "time" : "times"}` : "has not tapped the button yet";
+  }
+  if (f.state === "done") {
+    if (!f.checked) return "follow not checked";
+    return f.after_ask ? "followed, then got the link" : "already followed";
+  }
+  return null;
+}
+
+// Where an answer's follow-up is (the event's `follow_up`), or "".
+// The API's skip labels start with "No follow-up: ", which the row's own
+// words already say.
+function describeEventFollowUp(f) {
+  if (!f || typeof f !== "object" || !f.state) return "";
+  if (f.state === "scheduled") return `follow-up scheduled for ${f.due_at || "later"}`;
+  if (f.state === "sending") return "follow-up sending";
+  if (f.state === "sent") return `follow-up sent${f.sent_at ? ` ${f.sent_at}` : ""}`;
+  if (f.state === "skipped") {
+    const why = String(f.reason_label || f.reason || "").replace(/^No follow-up:\s*/i, "");
+    return `follow-up skipped${why ? `: ${why}` : ""}`;
+  }
+  if (f.state === "failed") return `follow-up failed${f.reason ? `: ${f.reason}` : ""}`;
+  return `follow-up ${f.state}`;
+}
 
 // One row of automations:events: time, kind, outcome (with the reason when
-// it was skipped or failed), who, what they wrote, the DM that went out.
+// it was skipped or failed), who, what they wrote, the DM that went out, and
+// where its follow-up is.
 function formatAutomationEvent(e) {
   const person = e.person || {};
   const who = person.username ? `@${person.username}` : person.id ? `person ${person.id}` : "(unknown)";
   let outcome = e.outcome || "?";
-  const note = e.reason_label || e.reason || AUTOMATION_OUTCOME_NOTES[e.outcome];
+  const tapStep = e.outcome === "waiting" && e.follow_gate && e.follow_gate.mode === "tap";
+  const note = e.reason_label || e.reason || (tapStep ? WAITING_FOR_TAP_NOTE : AUTOMATION_OUTCOME_NOTES[e.outcome]);
   if (note) outcome += ` (${note})`;
+  const follow = describeFollowState(e.follow_gate);
+  if (follow) outcome += `, ${follow}`;
   const parts = [e.created_at || e.sent_at || "", AUTOMATION_KIND_WORDS[e.kind] || e.kind || "", outcome, who];
   if (e.trigger_text) parts.push(`"${truncate(e.trigger_text, 60)}"`);
   if (e.message) parts.push(`DM: "${truncate(e.message, 60)}"`);
+  parts.push(describeEventFollowUp(e.follow_up));
   return parts.filter(Boolean).join("  ");
 }
 
@@ -1500,7 +1865,11 @@ function printCommentDm(automation) {
     perChannel.length > 0
       ? perChannel.map((x) => `${AUTOMATION_PLATFORM_WORDS[x.platform] || x.platform} id ${x.id}`).join(", ")
       : `id ${automation.id}`;
-  console.log(`Comment-to-DM: ${state} (${keywords}; ${ids})`);
+  // Follow first runs on the Instagram automation only; the top-level fields
+  // are those of the first automation, Instagram when the post goes there.
+  const gate = (automation.actions || {}).follow_gate;
+  const gated = Boolean(gate && gate.enabled);
+  console.log(`Comment-to-DM: ${state} (${keywords}${gated ? "; follow first on Instagram" : ""}; ${ids})`);
 }
 
 // --- Social Inbox ---
@@ -2728,7 +3097,7 @@ async function cmdAutomationsGet(config, flags, positional) {
 async function cmdAutomationsCreate(config, flags) {
   if (flags.dm === undefined) {
     exitWithError(
-      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--platform instagram|facebook|x --instagram-media-id <id> | --facebook-post-id <id> --reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --paused]'
+      'Usage: omnisocials automations:create --dm "<text>" --keywords "guide,link" --post-id <id> [--platform instagram|facebook|x --instagram-media-id <id> | --facebook-post-id <id> --reply "Sent you a DM!" --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --follow-first on|off --follow-text "..." --follow-button "..." --not-following-text "..." --not-following-button "..." --follow-up-text "<text>" --follow-up-delay <1-23> --follow-up-button-title "<label>" --follow-up-button-url <https://...> --follow-up-tap-text "<text>" --follow-up-tap-button "<label>" --name "..." --paused]'
     );
   }
 
@@ -2752,7 +3121,7 @@ async function cmdAutomationsUpdate(config, flags, positional) {
   const id = flags.id || positional[0];
   if (!id) {
     exitWithError(
-      'Usage: omnisocials automations:update <id> [--keywords "guide,link" --match word|contains|any --dm "<text>" --reply "<text>" --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --name "..." --pause | --resume]'
+      'Usage: omnisocials automations:update <id> [--keywords "guide,link" --match word|contains|any --dm "<text>" --reply "<text>" --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --scope post|next_post|any --triggers comment,dm,story_reply --max-sends <n> --stop-at <ISO8601> --follow-first on|off --follow-text "..." --follow-button "..." --not-following-text "..." --not-following-button "..." --follow-up-text "<text>" | --no-follow-up --follow-up-delay <1-23> --follow-up-button-title "<label>" --follow-up-button-url <https://...> | --no-follow-up-button --follow-up-tap-text "<text>" --follow-up-tap-button "<label>" --name "..." --pause | --resume]'
     );
   }
 
@@ -2784,7 +3153,7 @@ async function cmdAutomationsEvents(config, flags, positional) {
   const id = flags.id || positional[0];
   if (!id) {
     exitWithError(
-      "Usage: omnisocials automations:events <id> [--outcome sent|skipped|failed|pending|queued|opted_out --limit <1-100> --offset <n>]"
+      "Usage: omnisocials automations:events <id> [--outcome sent|skipped|failed|pending|queued|opted_out|waiting --limit <1-100> --offset <n>]"
     );
   }
 
@@ -4524,11 +4893,19 @@ TAGS (labels on posts inside OmniSocials, never sent to a platform; one name per
 
 AUTOMATIONS (comment to DM on Instagram or a Facebook Page, DM keywords on X: needs the opt-in automations:read / automations:write scopes)
   automations:list               List automations: trigger, post, stats [--status active|paused|completed --platform instagram|facebook|x --post-id <id>]
-  automations:get <id>           Full detail: trigger, post, DM, public reply, limits, stats
-  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --platform instagram|facebook|x (default instagram; on Facebook the DM lands in Messenger; on X it answers DMs only, with no post or reply, while X DMs are on) --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply (Facebook: comment,dm; X: dm) --max-sends <n> --stop-at <ISO8601> --name --paused]
-  automations:update <id>        Change only what you pass; the rest keeps its value [same flags, plus --pause | --resume]
+  automations:get <id>           Full detail: trigger, post, DM, public reply, follow first, follow-up, limits, stats
+  automations:create             Answer a keyword in a comment with a DM, once per person [--dm "<text>" (required) --keywords "guide,link" --platform instagram|facebook|x (default instagram; on Facebook the DM lands in Messenger; on X it answers DMs only, with no post or reply, while X DMs are on) --post-id <id> | --instagram-media-id <id> | --facebook-post-id <id> --reply "<text>" (repeat for variations) --match word|contains|any --scope post|next_post|any --triggers comment,dm,story_reply (Facebook: comment,dm; X: dm) --max-sends <n> --stop-at <ISO8601> --follow-first on|off (Instagram only: the DM waits until the person follows you) --follow-text --follow-button --not-following-text --not-following-button --follow-up-text "<text>" (Instagram and Facebook: one more DM after the answer) --follow-up-delay <1-23> (hours, default 23) --follow-up-button-title "<label>" --follow-up-button-url <https://...> (together: a link button) --follow-up-tap-text --follow-up-tap-button (Instagram) --name --paused]
+  automations:update <id>        Change only what you pass; the rest keeps its value [same flags, plus --pause | --resume; --follow-first off keeps the texts, new texts keep the switch; --follow-up-text switches the follow-up on, --no-follow-up off (the texts stay), --no-follow-up-button removes its button, the delay, button and tap flags alone keep the switch]
   automations:delete <id>        Delete an automation (DMs that went out stay)
-  automations:events <id>        Activity: who wrote what, the DM sent, queued or why it was skipped [--outcome sent|skipped|failed|pending|queued|opted_out --limit <1-100> --offset]
+  automations:events <id>        Activity: who wrote what, the DM sent, queued, waiting for a follow or a tap, why it was skipped, and the follow-up [--outcome sent|skipped|failed|pending|queued|opted_out|waiting --limit <1-100> --offset]
+  Follow first (Instagram only): the first DM carries a button (--follow-text, --follow-button); a tap checks
+  whether the person follows you: a follower gets --dm, anyone else the --not-following-text with its button,
+  and every later tap checks again. A DM or story reply trigger checks at once. Texts left out use the defaults.
+  Follow-up (Instagram and Facebook, not X): one more DM N hours (1 to 23) after the answer. Meta allows an automatic
+  message only within 24 hours after the person's last DM or button tap; a comment does not count. So on an Instagram
+  comment the first DM becomes a tap step (a short text with a button, --follow-up-tap-text, --follow-up-tap-button):
+  the tap sends the --dm text. A DM or story reply trigger needs no tap; on Facebook only people who answer the DM
+  in Messenger get it. It is skipped when the person stopped, your team answered by hand or the window closed.
 
 LOCATIONS
   locations:search "<name>"      Find location ids for a place [--platform instagram|threads --latitude --longitude]
@@ -4609,6 +4986,11 @@ POST OPTIONS (for posts:create / posts:create-and-publish / posts:update)
   --dm-max-sends <n>             Comment to DM: stop after n DMs
   --dm-stop-at <ISO8601>         Comment to DM: stop at this time
   --dm-platforms <a,b>           Comment to DM: the channels that get it, instagram,facebook (one automation each; default Instagram when the post goes there, else Facebook)
+  --dm-follow-first              Comment to DM, Instagram only: ask people to follow you first. The first DM has a button; a tap checks the follow, a follower gets --dm-message, anyone else a nudge with a button to tap again (a Facebook automation of the same post sends at once). posts:update sends the setup whole: pass it again to keep it
+  --dm-follow-text "<text>"      Follow first: the first DM (max 640 chars; default "Tap the button and I'll send you the link 👇")
+  --dm-follow-button "<label>"   Follow first: its button (max 20 chars; default "Send me the link")
+  --dm-not-following-text ".."   Follow first: the DM to someone who does not follow yet (max 640 chars; default "Almost there! Follow us first, then tap the button again.")
+  --dm-not-following-button ".." Follow first: its button (max 20 chars; default "I follow now")
   --no-dm                        posts:update only: remove the post's comment-to-DM automation
   --location-id <id>             Instagram place tag (from locations:search)
   --threads-location-id <id>     Threads place tag (from locations:search --platform threads; "null" clears on update)
@@ -4705,6 +5087,8 @@ EXAMPLES
   omnisocials posts:create --text "Autumn outfit" --channels pinterest --media-urls "https://example.com/outfit.jpg" --pinterest-board-id <board_id> --pinterest-product-tags 813744226420795884,813744226420795885
   omnisocials posts:create --text "Comment GUIDE for the free checklist" --channels instagram --media-urls "https://example.com/photo.jpg" --dm-keywords "guide" --dm-message "Here is the checklist: https://example.com/guide" --dm-reply "Sent you a DM!"
   omnisocials automations:create --post-id 83778183 --keywords "guide,link" --dm "Here is the guide: https://example.com/guide" --reply "Sent you a DM!" --reply "Check your inbox"
+  omnisocials automations:create --post-id 83778183 --keywords "guide" --dm "Here is the guide: https://example.com/guide" --follow-up-text "Did the guide help? Book a free call" --follow-up-delay 6 --follow-up-button-title "Book a call" --follow-up-button-url https://example.com/call
+  omnisocials automations:create --post-id 83778183 --keywords "guide" --dm "Here is the guide: https://example.com/guide" --follow-first on --follow-text "Tap below and I'll send you the guide" --follow-button "Send me the guide"
   omnisocials automations:create --platform facebook --facebook-post-id 104857600_123456789 --keywords "guide" --dm "Here is the guide: https://example.com/guide"
   omnisocials automations:create --platform x --keywords "guide" --dm "Here is the guide: https://example.com/guide" --paused
   omnisocials automations:events 100000004

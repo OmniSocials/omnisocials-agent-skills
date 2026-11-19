@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.41.1");
+    expect(stdout).toContain("OmniSocials CLI v1.42.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -3709,6 +3709,608 @@ describe("Comment-to-DM automations (mock API)", () => {
         expect(bad.exitCode).not.toBe(0);
         expect(bad.stderr).toContain('--dm-platforms: "x" is not one of instagram|facebook');
         expect(calls).toHaveLength(0);
+      }
+    );
+  });
+});
+
+// Follow first: actions.follow_gate as the API returns it (defaults filled in).
+const FOLLOW_GATE = {
+  enabled: true,
+  first_message: { text: "Tap below and I'll send you the guide", button: "Send me the guide" },
+  not_following: { text: "Almost there! Follow us first, then tap the button again.", button: "I follow now" },
+};
+
+describe("Follow first (mock API)", () => {
+  it("help lists the follow flags on posts and automations and the waiting outcome", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("--dm-follow-first");
+    expect(stdout).toContain("--dm-not-following-button");
+    expect(stdout).toContain("--follow-first on|off");
+    expect(stdout).toContain("opted_out|waiting");
+  });
+
+  it("automations:create --follow-first on sends actions.follow_gate with the texts given and prints the Follow first line", async () => {
+    const gated = { ...AUTOMATION, actions: { ...AUTOMATION.actions, follow_gate: FOLLOW_GATE }, stats: { ...AUTOMATION.stats, followed: 4 } };
+    await withMockServer(
+      () => ({ status: 201, json: { data: gated } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:create",
+          "--post-id",
+          "83778183",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here is the guide: https://example.com/guide",
+          "--follow-first",
+          "on",
+          "--follow-text",
+          "Tap below and I'll send you the guide",
+          "--follow-button",
+          "Send me the guide",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.actions).toEqual({
+          dm: { text: "Here is the guide: https://example.com/guide" },
+          follow_gate: {
+            enabled: true,
+            first_message: { text: "Tap below and I'll send you the guide", button: "Send me the guide" },
+          },
+        });
+        expect(stdout).toContain(
+          'Follow first: on: first "Tap below and I\'ll send you the guide" [Send me the guide]; not following yet "Almost there! Follow us first, then tap the button again." [I follow now]'
+        );
+        expect(stdout).toContain("Stats: 12 sent / 15 matched / 3 skipped / 0 failed / 4 followed first");
+      }
+    );
+  });
+
+  it("automations:update --follow-first off sends { enabled: false }, and texts alone leave the switch out", async () => {
+    await withMockServer(
+      () => ({ json: { data: { ...AUTOMATION, actions: { ...AUTOMATION.actions, follow_gate: { ...FOLLOW_GATE, enabled: false } } } } }),
+      async (baseUrl, calls) => {
+        const off = await run(["automations:update", "100000004", "--follow-first", "off", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(off.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].body).toEqual({ actions: { follow_gate: { enabled: false } } });
+        expect(off.stdout).toContain("Follow first: off");
+
+        const texts = await run([
+          "automations:update",
+          "100000004",
+          "--not-following-text",
+          "Follow @studio first, then tap again.",
+          "--not-following-button",
+          "Done, I follow",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(texts.exitCode).toBe(0);
+        expect(calls[1].body).toEqual({
+          actions: { follow_gate: { not_following: { text: "Follow @studio first, then tap again.", button: "Done, I follow" } } },
+        });
+      }
+    );
+  });
+
+  it("refuses Follow first on Facebook and X, a button over 20 characters, a bad switch value and texts without the switch, before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const base = ["automations:create", "--dm", "x", "--keywords", "guide", "--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+        const facebook = await run([...base, "--platform", "facebook", "--facebook-post-id", "1_2", "--follow-first", "on"]);
+        expect(facebook.exitCode).not.toBe(0);
+        expect(facebook.stderr).toContain("Follow first works on Instagram only: Facebook does not tell apps who follows an account");
+
+        const x = await run([...base, "--platform", "x", "--follow-first"]);
+        expect(x.exitCode).not.toBe(0);
+        expect(x.stderr).toContain("Follow first works on Instagram only: X does not tell apps who follows an account");
+
+        const long = await run([...base, "--post-id", "1", "--follow-first", "on", "--follow-button", "Send me the link right now"]);
+        expect(long.exitCode).not.toBe(0);
+        expect(long.stderr).toContain("--follow-button can hold 20 characters");
+
+        const bad = await run([...base, "--post-id", "1", "--follow-first", "maybe"]);
+        expect(bad.exitCode).not.toBe(0);
+        expect(bad.stderr).toContain('--follow-first must be on or off (got "maybe")');
+
+        const noSwitch = await run([...base, "--post-id", "1", "--follow-text", "Tap below"]);
+        expect(noSwitch.exitCode).not.toBe(0);
+        expect(noSwitch.stderr).toContain("--follow-text is a text of Follow first: add --follow-first");
+
+        const postFacebook = await run([
+          "posts:create",
+          "--text",
+          "Comment GUIDE",
+          "--channels",
+          "facebook",
+          "--dm-keywords",
+          "guide",
+          "--dm-message",
+          "Here you go",
+          "--dm-platforms",
+          "facebook",
+          "--dm-follow-first",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(postFacebook.exitCode).not.toBe(0);
+        expect(postFacebook.stderr).toContain("Add instagram to --dm-platforms or drop --dm-follow-first");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("posts:create --dm-follow-first adds follow_gate to comment_dm_automation and prints it on the Comment-to-DM line", async () => {
+    const bound = {
+      ...AUTOMATION,
+      id: "100000006",
+      post: null,
+      actions: { ...AUTOMATION.actions, follow_gate: FOLLOW_GATE },
+      platforms: ["instagram", "facebook"],
+      automations: [
+        { id: "100000006", platform: "instagram", status: "active" },
+        { id: "100000007", platform: "facebook", status: "active" },
+      ],
+    };
+    await withMockServer(
+      () => ({ status: 201, json: { data: { id: "p1", status: "scheduled", comment_dm_automation: bound } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "posts:create",
+          "--text",
+          "Comment GUIDE for the free checklist",
+          "--channels",
+          "instagram,facebook",
+          "--dm-keywords",
+          "guide",
+          "--dm-message",
+          "Here is the guide: https://example.com/guide",
+          "--dm-platforms",
+          "instagram,facebook",
+          "--dm-follow-first",
+          "--dm-not-following-text",
+          "Follow @studio first, then tap again.",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.comment_dm_automation).toEqual({
+          trigger: { keywords: ["guide"], match: "word" },
+          actions: {
+            dm: { text: "Here is the guide: https://example.com/guide" },
+            follow_gate: { enabled: true, not_following: { text: "Follow @studio first, then tap again." } },
+          },
+          platforms: ["instagram", "facebook"],
+        });
+        expect(stdout).toContain(
+          "Comment-to-DM: on (keywords: guide, link; follow first on Instagram; Instagram id 100000006, Facebook id 100000007)"
+        );
+      }
+    );
+  });
+
+  it("automations:events takes --outcome waiting and prints where each person is", async () => {
+    const events = [
+      {
+        id: "1",
+        automation_id: "100000004",
+        kind: "comment",
+        outcome: "waiting",
+        reason: null,
+        reason_label: null,
+        person: { id: "p1", username: "anna" },
+        trigger_text: "guide please",
+        message: null,
+        follow_gate: { state: "waiting", asked_at: "2026-11-03T09:00:00.000Z", taps: 2, followed: false, checked: true, after_ask: false },
+        created_at: "2026-11-03T09:00:00.000Z",
+      },
+      {
+        id: "2",
+        automation_id: "100000004",
+        kind: "comment",
+        outcome: "sent",
+        reason: null,
+        reason_label: null,
+        person: { id: "p2", username: "bram" },
+        trigger_text: "guide",
+        message: "Here is the guide: https://example.com/guide",
+        follow_gate: { state: "done", asked_at: "2026-11-03T08:00:00.000Z", taps: 1, followed: true, checked: true, after_ask: true },
+        created_at: "2026-11-03T08:00:00.000Z",
+      },
+    ];
+    await withMockServer(
+      () => ({ json: { data: events, counts: { sent: 1, waiting: 1 }, pagination: { total: 2, limit: 25, offset: 0, has_more: false } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:events",
+          "100000004",
+          "--outcome",
+          "waiting",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].query.get("outcome")).toBe("waiting");
+        expect(stdout).toContain("Counts: 1 sent, 1 waiting");
+        expect(stdout).toContain("waiting (waiting for follow: asked to follow first, the link goes out after the follow), asked to follow, tapped 2 times  @anna");
+        expect(stdout).toContain("sent, followed, then got the link  @bram");
+      }
+    );
+  });
+  it("automations:create with Follow first and a follow-up sends both in one actions object", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: { ...AUTOMATION, actions: { ...AUTOMATION.actions, follow_gate: FOLLOW_GATE } } } }),
+      async (baseUrl, calls) => {
+        const { exitCode } = await run([
+          "automations:create",
+          "--post-id",
+          "83778183",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here is the guide: https://example.com/guide",
+          "--follow-first",
+          "on",
+          "--follow-up-text",
+          "Did the guide help?",
+          "--follow-up-delay",
+          "6",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.actions).toEqual({
+          dm: { text: "Here is the guide: https://example.com/guide" },
+          follow_gate: { enabled: true },
+          follow_up: { enabled: true, text: "Did the guide help?", delay_hours: 6 },
+        });
+      }
+    );
+  });
+
+  it("automations:events says a tap step row got the link after the tap, with no follow check words", async () => {
+    const events = [
+      {
+        id: "3",
+        automation_id: "100000004",
+        kind: "comment",
+        outcome: "sent",
+        reason: null,
+        reason_label: null,
+        person: { id: "p3", username: "cleo" },
+        trigger_text: "guide",
+        message: "Here is the guide: https://example.com/guide",
+        follow_gate: { mode: "tap", state: "done", asked_at: "2026-11-16T08:00:00.000Z", taps: 1, followed: null, checked: false, after_ask: false },
+        created_at: "2026-11-16T08:00:00.000Z",
+      },
+    ];
+    await withMockServer(
+      () => ({ json: { data: events, counts: { sent: 1 }, pagination: { total: 1, limit: 25, offset: 0, has_more: false } } }),
+      async (baseUrl) => {
+        const { stdout, exitCode } = await run(["automations:events", "100000004", "--api-key", MOCK_KEY, "--base-url", baseUrl]);
+        expect(exitCode).toBe(0);
+        expect(stdout).toContain("sent, link sent after the tap  @cleo");
+        expect(stdout).not.toContain("follow not checked");
+      }
+    );
+  });
+});
+
+// The follow-up: actions.follow_up as the API returns it (tap filled in with
+// the defaults on Instagram, null on Facebook).
+const FOLLOW_UP = {
+  enabled: true,
+  text: "Did the guide help? Book a free call",
+  delay_hours: 6,
+  button: { title: "Book a call", url: "https://example.com/call" },
+  tap: { text: "Tap the button and I'll send you the link 👇", button: "Send me the link" },
+};
+const FOLLOW_UP_AUTOMATION = {
+  ...AUTOMATION,
+  actions: { ...AUTOMATION.actions, follow_up: FOLLOW_UP },
+  stats: { ...AUTOMATION.stats, follow_ups_sent: 7, follow_ups_skipped: 1 },
+};
+
+describe("Comment-to-DM follow-up (mock API)", () => {
+  const auth = (baseUrl) => ["--api-key", MOCK_KEY, "--base-url", baseUrl];
+
+  it("help lists the follow-up flags and the waiting outcome", async () => {
+    const { stdout, exitCode } = await run(["--help"]);
+    expect(exitCode).toBe(0);
+    expect(stdout).toContain("--follow-up-text");
+    expect(stdout).toContain("--follow-up-delay <1-23>");
+    expect(stdout).toContain("--follow-up-button-url");
+    expect(stdout).toContain("--follow-up-tap-button");
+    expect(stdout).toContain("--no-follow-up-button");
+    expect(stdout).toContain("opted_out|waiting");
+  });
+
+  it("automations:create sends actions.follow_up from every follow-up flag and prints the Follow-up line and stats", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: FOLLOW_UP_AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run([
+          "automations:create",
+          "--post-id",
+          "83778183",
+          "--keywords",
+          "guide",
+          "--dm",
+          "Here is the guide: https://example.com/guide",
+          "--follow-up-text",
+          "Did the guide help? Book a free call",
+          "--follow-up-delay",
+          "6",
+          "--follow-up-button-title",
+          "Book a call",
+          "--follow-up-button-url",
+          "https://example.com/call",
+          "--follow-up-tap-text",
+          "Tap below for the guide",
+          "--follow-up-tap-button",
+          "Send me the guide",
+          ...auth(baseUrl),
+        ]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].body.actions).toEqual({
+          dm: { text: "Here is the guide: https://example.com/guide" },
+          follow_up: {
+            enabled: true,
+            text: "Did the guide help? Book a free call",
+            delay_hours: 6,
+            button: { title: "Book a call", url: "https://example.com/call" },
+            tap: { text: "Tap below for the guide", button: "Send me the guide" },
+          },
+        });
+        expect(stdout).toContain(
+          'Follow-up: on: after 6 h "Did the guide help? Book a free call"; button Book a call -> https://example.com/call; tap step "Tap the button and I\'ll send you the link 👇" [Send me the link]'
+        );
+        expect(stdout).toContain("Stats: 12 sent / 15 matched / 3 skipped / 0 failed / 7 follow-ups sent / 1 follow-up skipped");
+      }
+    );
+  });
+
+  it("automations:create without follow-up flags sends no follow_up; --follow-up-text alone sends enabled and the text", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const base = ["automations:create", "--post-id", "83778183", "--keywords", "guide", "--dm", "Here you go", ...auth(baseUrl)];
+        const plain = await run(base);
+        expect(plain.exitCode).toBe(0);
+        expect(calls[0].body.actions).toEqual({ dm: { text: "Here you go" } });
+        // The API's answer without follow_up (an older answer) prints no line.
+        expect(plain.stdout).not.toContain("Follow-up:");
+
+        const text = await run([...base, "--follow-up-text", "Any questions?"]);
+        expect(text.exitCode).toBe(0);
+        expect(calls[1].body.actions.follow_up).toEqual({ enabled: true, text: "Any questions?" });
+      }
+    );
+  });
+
+  it("automations:update --follow-up-delay sends only the delay, --no-follow-up only enabled false, --no-follow-up-button button null", async () => {
+    await withMockServer(
+      (req, body) => {
+        const f = (body && body.actions && body.actions.follow_up) || {};
+        const followUp = f.enabled === false ? { ...FOLLOW_UP, enabled: false } : { ...FOLLOW_UP, ...f };
+        return { json: { data: { ...FOLLOW_UP_AUTOMATION, actions: { ...AUTOMATION.actions, follow_up: followUp } } } };
+      },
+      async (baseUrl, calls) => {
+        const delay = await run(["automations:update", "100000004", "--follow-up-delay", "12", ...auth(baseUrl)]);
+        expect(delay.exitCode).toBe(0);
+        expect(calls[0].method).toBe("PATCH");
+        expect(calls[0].path).toBe("/automations/100000004");
+        expect(calls[0].body).toEqual({ actions: { follow_up: { delay_hours: 12 } } });
+        expect(delay.stdout).toContain('Follow-up: on: after 12 h "Did the guide help? Book a free call"');
+
+        const off = await run(["automations:update", "100000004", "--no-follow-up", ...auth(baseUrl)]);
+        expect(off.exitCode).toBe(0);
+        expect(calls[1].body).toEqual({ actions: { follow_up: { enabled: false } } });
+        expect(off.stdout).toContain("Follow-up: off");
+
+        const noButton = await run(["automations:update", "100000004", "--no-follow-up-button", ...auth(baseUrl)]);
+        expect(noButton.exitCode).toBe(0);
+        expect(calls[2].body).toEqual({ actions: { follow_up: { button: null } } });
+        expect(noButton.stdout).toContain('Follow-up: on: after 6 h "Did the guide help? Book a free call"; tap step');
+        expect(noButton.stdout).not.toContain("Book a call ->");
+
+        const tap = await run(["automations:update", "100000004", "--follow-up-tap-button", "Get the guide", ...auth(baseUrl)]);
+        expect(tap.exitCode).toBe(0);
+        expect(calls[3].body).toEqual({ actions: { follow_up: { tap: { button: "Get the guide" } } } });
+
+        const on = await run(["automations:update", "100000004", "--follow-up-text", "Still interested?", ...auth(baseUrl)]);
+        expect(on.exitCode).toBe(0);
+        expect(calls[4].body).toEqual({ actions: { follow_up: { enabled: true, text: "Still interested?" } } });
+      }
+    );
+  });
+
+  it("refuses the follow-up on X, a bad delay, half a button, tap flags on Facebook and other bad input, before calling the API", async () => {
+    await withMockServer(
+      () => ({ status: 201, json: { data: AUTOMATION } }),
+      async (baseUrl, calls) => {
+        const base = ["automations:create", "--dm", "x", "--keywords", "guide", ...auth(baseUrl)];
+        const ig = [...base, "--post-id", "1", "--follow-up-text", "Any questions?"];
+
+        const x = await run([...base, "--platform", "x", "--follow-up-text", "Any questions?"]);
+        expect(x.exitCode).not.toBe(0);
+        expect(x.stderr).toContain("X has no follow-up: X allows an automatic DM only as the answer to a DM. Drop --follow-up-text.");
+
+        const xOff = await run([...base, "--platform", "x", "--no-follow-up"]);
+        expect(xOff.exitCode).not.toBe(0);
+        expect(xOff.stderr).toContain("X has no follow-up");
+
+        for (const bad of ["0", "24", "2.5", "soon"]) {
+          const delay = await run([...ig, "--follow-up-delay", bad]);
+          expect(delay.exitCode).not.toBe(0);
+          expect(delay.stderr).toContain(`--follow-up-delay must be a whole number of hours from 1 to 23 (got "${bad}")`);
+        }
+
+        const titleOnly = await run([...ig, "--follow-up-button-title", "Book a call"]);
+        expect(titleOnly.exitCode).not.toBe(0);
+        expect(titleOnly.stderr).toContain("The follow-up's button needs both --follow-up-button-title");
+
+        const urlOnly = await run([...ig, "--follow-up-button-url", "https://example.com/call"]);
+        expect(urlOnly.exitCode).not.toBe(0);
+        expect(urlOnly.stderr).toContain("The follow-up's button needs both");
+
+        const longTitle = await run([...ig, "--follow-up-button-title", "Book a free call right now", "--follow-up-button-url", "https://example.com"]);
+        expect(longTitle.exitCode).not.toBe(0);
+        expect(longTitle.stderr).toContain("--follow-up-button-title can hold 20 characters");
+
+        const badUrl = await run([...ig, "--follow-up-button-title", "Book a call", "--follow-up-button-url", "ftp://example.com"]);
+        expect(badUrl.exitCode).not.toBe(0);
+        expect(badUrl.stderr).toContain("--follow-up-button-url must be a web address that starts with https:// or http://");
+
+        const both = await run([...ig, "--no-follow-up-button", "--follow-up-button-title", "Book a call", "--follow-up-button-url", "https://example.com"]);
+        expect(both.exitCode).not.toBe(0);
+        expect(both.stderr).toContain("--no-follow-up-button removes the follow-up's button and cannot go with --follow-up-button-title");
+
+        const offAndText = await run([...ig, "--no-follow-up"]);
+        expect(offAndText.exitCode).not.toBe(0);
+        expect(offAndText.stderr).toContain("--no-follow-up switches the follow-up off and cannot go with --follow-up-text");
+
+        const facebookTap = await run([
+          ...base,
+          "--platform",
+          "facebook",
+          "--facebook-post-id",
+          "1_2",
+          "--follow-up-text",
+          "Any questions?",
+          "--follow-up-tap-text",
+          "Tap below",
+        ]);
+        expect(facebookTap.exitCode).not.toBe(0);
+        expect(facebookTap.stderr).toContain("The tap step is Instagram's: a Facebook comment answer has no button. Drop --follow-up-tap-text.");
+
+        const noText = await run([...base, "--post-id", "1", "--follow-up-delay", "6"]);
+        expect(noText.exitCode).not.toBe(0);
+        expect(noText.stderr).toContain("the follow-up needs --follow-up-text");
+
+        const longWithButton = await run([
+          ...base,
+          "--post-id",
+          "1",
+          "--follow-up-text",
+          "a".repeat(700),
+          "--follow-up-button-title",
+          "Book a call",
+          "--follow-up-button-url",
+          "https://example.com",
+        ]);
+        expect(longWithButton.exitCode).not.toBe(0);
+        expect(longWithButton.stderr).toContain("With a button the follow-up can hold 640 characters");
+
+        expect(calls).toHaveLength(0);
+      }
+    );
+  });
+
+  it("automations:get prints the Facebook note, the Follow first tap and off; no line on X", async () => {
+    const facebook = {
+      ...AUTOMATION,
+      platform: "facebook",
+      actions: { ...AUTOMATION.actions, follow_up: { ...FOLLOW_UP, button: null, tap: null } },
+    };
+    const gated = {
+      ...FOLLOW_UP_AUTOMATION,
+      actions: { ...FOLLOW_UP_AUTOMATION.actions, follow_gate: { enabled: true } },
+    };
+    const off = { ...AUTOMATION, actions: { ...AUTOMATION.actions, follow_up: { ...FOLLOW_UP, enabled: false } } };
+    const x = { ...AUTOMATION, platform: "x", trigger: { kinds: ["dm"], keywords: ["guide"], match: "word" }, actions: { ...AUTOMATION.actions, follow_up: null } };
+    const byId = { 1: facebook, 2: gated, 3: off, 4: x };
+    await withMockServer(
+      (req) => ({ json: { data: byId[req.url.split("/").pop()] } }),
+      async (baseUrl) => {
+        const fb = await run(["automations:get", "1", ...auth(baseUrl)]);
+        expect(fb.exitCode).toBe(0);
+        expect(fb.stdout).toContain(
+          'Follow-up: on: after 6 h "Did the guide help? Book a free call"; a comment answer has no button: only people who answer it in Messenger get it'
+        );
+
+        const gate = await run(["automations:get", "2", ...auth(baseUrl)]);
+        expect(gate.stdout).toContain("; tap step: the Follow first button");
+
+        const offLine = await run(["automations:get", "3", ...auth(baseUrl)]);
+        expect(offLine.stdout).toContain("Follow-up: off");
+
+        const xLine = await run(["automations:get", "4", ...auth(baseUrl)]);
+        expect(xLine.exitCode).toBe(0);
+        expect(xLine.stdout).not.toContain("Follow-up:");
+      }
+    );
+  });
+
+  it("automations:events takes --outcome waiting, reads a tap-step row as waiting for the tap, and prints each follow-up state", async () => {
+    const event = (id, outcome, extra) => ({
+      id,
+      automation_id: "100000004",
+      kind: "comment",
+      outcome,
+      reason: null,
+      reason_label: null,
+      person: { id: `p${id}`, username: `user${id}` },
+      trigger_text: "guide",
+      message: outcome === "sent" ? "Here is the guide: https://example.com/guide" : null,
+      follow_gate: null,
+      follow_up: null,
+      created_at: `2026-11-16T0${id}:00:00.000Z`,
+      sent_at: null,
+      ...extra,
+    });
+    const events = [
+      event("1", "waiting", { follow_gate: { state: "waiting", taps: 0, mode: "tap" } }),
+      event("2", "waiting", { follow_gate: { state: "waiting", taps: 1, mode: "follow" } }),
+      event("3", "sent", { follow_up: { state: "scheduled", due_at: "2026-11-16T09:00:00.000Z", sent_at: null, reason: null, reason_label: null } }),
+      event("4", "sent", { follow_up: { state: "sent", due_at: "2026-11-16T10:00:00.000Z", sent_at: "2026-11-16T10:00:05.000Z", reason: null, reason_label: null } }),
+      event("5", "sent", {
+        follow_up: {
+          state: "skipped",
+          due_at: "2026-11-16T11:00:00.000Z",
+          sent_at: null,
+          reason: "team_answered",
+          reason_label: "No follow-up: your team answered this person by hand",
+        },
+      }),
+      event("6", "sent", { follow_up: { state: "failed", due_at: null, sent_at: null, reason: "interrupted", reason_label: "interrupted" } }),
+    ];
+    await withMockServer(
+      () => ({ json: { data: events, counts: { sent: 4, waiting: 2 }, pagination: { total: 6, limit: 25, offset: 0, has_more: false } } }),
+      async (baseUrl, calls) => {
+        const { stdout, exitCode } = await run(["automations:events", "100000004", "--outcome", "waiting", ...auth(baseUrl)]);
+        expect(exitCode).toBe(0);
+        expect(calls[0].query.get("outcome")).toBe("waiting");
+        expect(stdout).toContain("Counts: 4 sent, 2 waiting");
+        expect(stdout).toContain(
+          "comment  waiting (waiting for the tap: the first DM has a button, the link goes out when the person taps it)  @user1"
+        );
+        expect(stdout).toContain(
+          "comment  waiting (waiting for follow: asked to follow first, the link goes out after the follow), asked to follow, tapped 1 time  @user2"
+        );
+        expect(stdout).toContain('DM: "Here is the guide: https://example.com/guide"  follow-up scheduled for 2026-11-16T09:00:00.000Z');
+        expect(stdout).toContain("follow-up sent 2026-11-16T10:00:05.000Z");
+        expect(stdout).toContain("follow-up skipped: your team answered this person by hand");
+        expect(stdout).toContain("follow-up failed: interrupted");
       }
     );
   });
