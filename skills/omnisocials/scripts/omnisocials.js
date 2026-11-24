@@ -8,7 +8,7 @@ const readline = require("node:readline");
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const VERSION = "1.43.0";
+const VERSION = "1.44.0";
 const DEFAULT_BASE_URL = "https://api.omnisocials.com/v1";
 // Channel identifiers accepted by --channels. "linkedin" is a personal profile;
 // "linkedin_page" is a company page (both can be connected to one workspace and
@@ -4230,6 +4230,24 @@ async function cmdInboxMarkRead(config, flags, positional) {
   });
 }
 
+// The `mention` answer of inbox:reply --mention-author: whether Facebook made
+// the commenter's name a clickable tag. tagged = linked and notified;
+// plain_name = Facebook refused the tag and the reply now starts with "@Name"
+// as plain text; failed = refused and the edit failed, so the raw @[id] text
+// can show (delete the reply and send it again without the flag); unverified =
+// posted, but the reply could not be read back to check.
+function printMention(mention, data) {
+  if (!mention || typeof mention !== "object") return;
+  const name = mention.name ? ` (${mention.name})` : "";
+  console.log(`Mention: ${mention.status || "unknown"}${name}`);
+  if (mention.message) console.log(`  ${mention.message}`);
+  if (mention.status === "failed" && data && data.id) {
+    console.log(
+      `  Delete it with inbox:delete ${data.id} and send it again without --mention-author.`
+    );
+  }
+}
+
 // Send a reply. Every comment on a post shares ONE conversation, so on a
 // comment/mention thread pass --message-id <message-id> (the "Message to
 // answer" id from inbox:next, or a message id from inbox:messages) to name the
@@ -4238,11 +4256,17 @@ async function cmdInboxMarkRead(config, flags, positional) {
 // reply goes to the conversation). Instagram/Facebook DMs whose 24-hour window
 // has closed answer 422 outside_messaging_window before anything is sent:
 // answer them from the native app, do not retry.
+// --mention-author (Facebook comments on the Page's own posts only): the API
+// puts the tag @[<commenter id>] before the text, so the reply starts with the
+// commenter's name as a clickable link and Facebook notifies them; do not
+// write the name or @[id] in --text. It reads the reply back from Facebook and
+// answers `mention` (tagged / plain_name / failed / unverified). Any other
+// conversation answers 400 mention_not_supported and sends nothing.
 async function cmdInboxReply(config, flags, positional) {
   const id = positional[0];
   const text = flags.text;
   const usage =
-    'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--message-id <message-id> --attachment-url <url> --attachment-type <type> --next]';
+    'Usage: omnisocials inbox:reply <conversation-id> --text "..." [--message-id <message-id> --mention-author --attachment-url <url> --attachment-type <type> --next]';
   if (!id || !text) {
     console.error(usage);
     process.exit(1);
@@ -4258,6 +4282,9 @@ async function cmdInboxReply(config, flags, positional) {
 
   const body = { text };
   if (messageId !== undefined) body.message_id = String(messageId);
+  // --mention-author: Facebook comment replies only (400 mention_not_supported
+  // elsewhere, nothing sent). The API adds the tag; --text stays the plain text.
+  if (flags["mention-author"]) body.mention_author = true;
   if (flags["attachment-url"]) body.attachment_url = flags["attachment-url"];
   if (flags["attachment-type"]) body.attachment_type = flags["attachment-type"];
   // --next: the response also carries the next conversation that needs an
@@ -4276,6 +4303,7 @@ async function cmdInboxReply(config, flags, positional) {
     console.log("Reply sent!");
     if (data && data.id) console.log(`Message ID: ${data.id}`);
     if (data && data.timestamp) console.log(`Sent: ${data.timestamp}`);
+    printMention(result.mention, data);
     if (flags.next) {
       console.log("");
       printNextItem(result.next, result.remaining);
@@ -4953,7 +4981,7 @@ INBOX (Social Inbox: needs the opt-in inbox:read / inbox:write scopes)
   inbox:next                     Next conversation that needs an answer (answerable DMs first, then expired Meta DMs flagged by reply_window, then comments), with its thread and post [--platform --type --order oldest|newest --include-read --exclude <conv-id,conv-id>]
   inbox:messages <conv-id>       Full message history for one conversation; comment threads print the post first [--limit --cursor]
   inbox:read <conv-id>           Mark a conversation's messages as read; also the durable skip for inbox:next (inbox:write)
-  inbox:reply <conv-id>          Reply to a conversation [--text (required) --message-id <message-id> (the comment being answered; always pass it on comment threads) --attachment-url --attachment-type --next] (inbox:write)
+  inbox:reply <conv-id>          Reply to a conversation [--text (required) --message-id <message-id> (the comment being answered; always pass it on comment threads) --mention-author (Facebook comments: tag the commenter, name first, clickable) --attachment-url --attachment-type --next] (inbox:write)
   inbox:hide <message-id>        Hide a comment on your post (Facebook, Instagram, TikTok, YouTube, Threads); --unhide reverses it (inbox:write)
   inbox:like <message-id>        Like a comment on your post as the Page/account (Facebook, LinkedIn Page, TikTok; Facebook: Like only); --unlike removes it (inbox:write)
   inbox:delete <message-id>      Delete a comment or one of your own replies from the platform (Facebook, Instagram; TikTok: own replies only); cannot be undone (inbox:write)
@@ -5109,6 +5137,7 @@ EXAMPLES
   omnisocials inbox:list --platform instagram --unread
   omnisocials inbox:next --platform instagram
   omnisocials inbox:reply <conversation-id> --text "Thanks for reaching out!" --message-id <message-id> --next
+  omnisocials inbox:reply fb_comment_<page>_<post> --text "thanks, it ships Monday" --message-id <message-id> --mention-author
   omnisocials posts:list --status scheduled --json
   omnisocials tags:list
   omnisocials posts:create --text "Why most hooks fail" --channels tiktok --media-urls "https://example.com/hook.mp4" --tags "Question hook,Talking head"

@@ -595,7 +595,7 @@ describe("CLI basics", () => {
   it("help lists the discord channel and flags", async () => {
     const { stdout, exitCode } = await run(["--help"]);
     expect(exitCode).toBe(0);
-    expect(stdout).toContain("OmniSocials CLI v1.43.0");
+    expect(stdout).toContain("OmniSocials CLI v1.44.0");
     expect(stdout).toContain("discord (a channel, posted through its webhook)");
     expect(stdout).toContain("--discord-button");
     expect(stdout).toContain("--discord-poll-json");
@@ -1593,6 +1593,100 @@ describe("Inbox work queue (mock API)", () => {
         expect(stdout.indexOf("Reply sent!")).toBeLessThan(stdout.indexOf("Next up:"));
         expect(stdout).toContain("Conversation: ig_comment_18001");
         expect(stdout).toContain("1 more waiting.");
+      }
+    );
+  });
+
+  it("inbox:reply --mention-author sends mention_author and prints the mention result", async () => {
+    let answer = {
+      data: { id: "99", text: "Jamie Rivera thanks!" },
+      mention: {
+        status: "tagged",
+        name: "Jamie Rivera",
+        message: "Facebook shows Jamie Rivera as a clickable tag and notified them.",
+      },
+    };
+    await withMockServer(
+      () => ({ json: answer }),
+      async (baseUrl, calls) => {
+        const args = [
+          "inbox:reply",
+          "fb_comment_1_2",
+          "--text",
+          "thanks!",
+          "--message-id",
+          "42",
+          "--mention-author",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ];
+        const ok = await run(args);
+        expect(ok.exitCode).toBe(0);
+        expect(calls[0].body).toEqual({ text: "thanks!", message_id: "42", mention_author: true });
+        expect(ok.stdout).toContain("Reply sent!");
+        expect(ok.stdout).toContain("Mention: tagged (Jamie Rivera)");
+        expect(ok.stdout).toContain("clickable tag");
+        expect(ok.stdout).not.toContain("inbox:delete");
+
+        answer = {
+          data: { id: "99" },
+          mention: { status: "failed", name: "Jamie Rivera", message: "Facebook did not accept the tag." },
+        };
+        const failed = await run(args);
+        expect(failed.exitCode).toBe(0);
+        expect(failed.stdout).toContain("Mention: failed (Jamie Rivera)");
+        expect(failed.stdout).toContain("inbox:delete 99");
+      }
+    );
+  });
+
+  it("inbox:reply relays 400 mention_not_supported", async () => {
+    await withMockServer(
+      () => ({
+        status: 400,
+        json: {
+          error: {
+            code: "mention_not_supported",
+            message: "mention_author works only on Facebook comment replies.",
+          },
+        },
+      }),
+      async (baseUrl) => {
+        const { stderr, exitCode } = await run([
+          "inbox:reply",
+          "ig_comment_1",
+          "--text",
+          "hi",
+          "--mention-author",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(exitCode).not.toBe(0);
+        expect(stderr).toContain("mention_not_supported");
+      }
+    );
+  });
+
+  it("inbox:reply without --mention-author sends no mention_author and prints no mention line", async () => {
+    await withMockServer(
+      () => ({ json: { data: { id: "99" } } }),
+      async (baseUrl, calls) => {
+        const { stdout } = await run([
+          "inbox:reply",
+          "fb_comment_1_2",
+          "--text",
+          "thanks!",
+          "--api-key",
+          MOCK_KEY,
+          "--base-url",
+          baseUrl,
+        ]);
+        expect(calls[0].body).toEqual({ text: "thanks!" });
+        expect(stdout).not.toContain("Mention:");
       }
     );
   });

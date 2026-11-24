@@ -1,7 +1,7 @@
 {
   "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
   "name": "omnisocials",
-  "version": "1.43.0",
+  "version": "1.44.0",
   "description": "Manage social media across 13 platforms: create, schedule, and publish posts, stories, and reels, upload media, read and reply to your social inbox, track analytics, and configure webhooks via the OmniSocials API.",
   "author": {
     "name": "OmniSocials",

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.44.0 (2026-11-25)
+
+### Added
+- **`inbox:reply --mention-author` tags the commenter in a Facebook comment reply.** Sent as `mention_author: true`: the API puts the tag `@[<commenter id>]` before the text, so the reply starts with the commenter's name as a clickable link and Facebook notifies them (write only the reply in `--text`). After the send the API reads the reply back from Facebook, and the CLI prints `Mention: <status> (<name>)` with the API's sentence: `tagged`, `plain_name` (Facebook did not accept the tag; the reply now starts with "@Name" as plain text), `failed` (not accepted and the edit failed: the CLI names the `inbox:delete` call) or `unverified` (posted, not read back). Facebook comments on the Page's own posts only; any other conversation answers `400 mention_not_supported` and sends nothing.
+- **SKILL.md**: the flag, the four statuses and an example.
+
 ## 1.43.0 (2026-11-18)
 
 ### Added
